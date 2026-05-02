@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Calculator Widget Preview</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0b0d1a;
+      color: #eee;
+      margin: 0;
+      padding: 16px;
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      gap: 16px;
+      min-height: 100vh;
+    }
+    iframe {
+      border: 1px solid #243763;
+      border-radius: 12px;
+      width: 100%;
+      height: 720px;
+      background: #1a1a2e;
+    }
+    .panel {
+      background: #16213e;
+      border-radius: 12px;
+      padding: 16px;
+      overflow: auto;
+    }
+    .panel h2 {
+      font-size: 0.9rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #9aa6c0;
+      margin-bottom: 12px;
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    button {
+      background: #243763;
+      color: #fff;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    button:hover { filter: brightness(1.15); }
+    .log {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.78rem;
+      background: #0b0d1a;
+      border-radius: 8px;
+      padding: 10px;
+      white-space: pre-wrap;
+      max-height: 480px;
+      overflow: auto;
+      color: #c4b5fd;
+    }
+    .log .ok { color: #6ee7b7; }
+    .log .err { color: #ff9b9b; }
+    .log .llm { color: #c4b5fd; }
+    p.note {
+      font-size: 0.8rem;
+      color: #9aa6c0;
+      line-height: 1.4;
+    }
+    code {
+      background: #0b0d1a;
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: #c4b5fd;
+    }
+  </style>
+</head>
+<body>
+  <iframe id="widget" src="widgets/keypad.html"></iframe>
+  <div class="panel">
+    <h2>Simulate the LLM reasoning path</h2>
+    <p class="note">
+      In a real MCP host (Claude Desktop, ChatGPT Apps), typing a math
+      question in chat causes the LLM to call a primitive tool, and the host
+      pushes the result to the widget via
+      <code>ui/notifications/tool-result</code>. These buttons simulate that
+      push so you can see the third path light up in the widget without
+      running the full host.
+    </p>
+    <div class="row">
+      <button data-tool="add" data-args='{"a":1,"b":1}'>add(1, 1)</button>
+      <button data-tool="multiply" data-args='{"a":6,"b":7}'>multiply(6, 7)</button>
+      <button data-tool="divide" data-args='{"a":1,"b":0}'>divide(1, 0) — error</button>
+      <button data-tool="subtract" data-args='{"a":10,"b":3.5}'>subtract(10, 3.5)</button>
+      <button data-tool="negate" data-args='{"x":5}'>negate(5)</button>
+    </div>
+
+    <h2>Tool-call log</h2>
+    <div id="log" class="log">(no calls yet)</div>
+  </div>
+
+  <script>
+    const widget = document.getElementById('widget');
+    const logEl = document.getElementById('log');
+    let calls = [];
+
+    function logEntry(kind, name, args, out) {
+      calls.push({ kind, name, args, out, t: new Date().toISOString().slice(11, 19) });
+      const html = calls.map(c =>
+        '<span class="' + (c.out && (c.out.ok === 'false' || c.out.code) ? 'err' : (c.kind === 'llm' ? 'llm' : 'ok')) + '">' +
+        c.t + '  [' + c.kind + ']  ' + c.name + '(' + JSON.stringify(c.args) + ')\n  -> ' +
+        JSON.stringify(c.out) + '</span>'
+      ).join('\n\n');
+      logEl.innerHTML = html;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // Compute the same primitive arithmetic the Rust server returns. The
+    // shape mirrors the CalcOutput enum exactly: { ok: "true"|"false", ... }.
+    function compute(name, args) {
+      const finite = (...xs) => xs.every(x => Number.isFinite(x));
+      if (name === 'add') {
+        if (!finite(args.a, args.b))
+          return { ok: 'false', op: 'add', inputs: [args.a, args.b], code: 'invalid_input', message: 'add requires finite numeric inputs.' };
+        const r = args.a + args.b;
+        return { ok: 'true', op: 'add', inputs: [args.a, args.b], result: r, display: String(r) };
+      }
+      if (name === 'subtract') {
+        if (!finite(args.a, args.b))
+          return { ok: 'false', op: 'subtract', inputs: [args.a, args.b], code: 'invalid_input', message: 'subtract requires finite numeric inputs.' };
+        const r = args.a - args.b;
+        return { ok: 'true', op: 'subtract', inputs: [args.a, args.b], result: r, display: String(r) };
+      }
+      if (name === 'multiply') {
+        if (!finite(args.a, args.b))
+          return { ok: 'false', op: 'multiply', inputs: [args.a, args.b], code: 'invalid_input', message: 'multiply requires finite numeric inputs.' };
+        const r = args.a * args.b;
+        return { ok: 'true', op: 'multiply', inputs: [args.a, args.b], result: r, display: String(r) };
+      }
+      if (name === 'divide') {
+        if (!finite(args.a, args.b))
+          return { ok: 'false', op: 'divide', inputs: [args.a, args.b], code: 'invalid_input', message: 'divide requires finite numeric inputs.' };
+        if (args.b === 0)
+          return { ok: 'false', op: 'divide', inputs: [args.a, args.b], code: 'divide_by_zero', message: 'Cannot divide by zero.' };
+        const r = args.a / args.b;
+        return { ok: 'true', op: 'divide', inputs: [args.a, args.b], result: r, display: String(r) };
+      }
+      if (name === 'negate') {
+        if (!finite(args.x))
+          return { ok: 'false', op: 'negate', inputs: [args.x], code: 'invalid_input', message: 'negate requires a finite numeric input.' };
+        return { ok: 'true', op: 'negate', inputs: [args.x], result: -args.x, display: String(-args.x) };
+      }
+      return { ok: 'false', op: name, inputs: [], code: 'unknown_tool', message: 'Unknown tool: ' + name };
+    }
+
+    widget.addEventListener('load', () => {
+      const w = widget.contentWindow;
+
+      // Mock the MCP bridge for the in-widget (server-path) tool calls.
+      w.mcpBridge = {
+        callTool: async (name, args) => {
+          const out = compute(name, args);
+          logEntry('server', name, args, out);
+          return out;
+        },
+        getState: () => {
+          try { return JSON.parse(localStorage.getItem('calc_state') || '{}'); }
+          catch (_) { return {}; }
+        },
+        setState: (s) => {
+          try { localStorage.setItem('calc_state', JSON.stringify(s)); } catch (_) {}
+        },
+        theme: 'dark',
+      };
+
+      // Wire up the simulated LLM-path buttons. We post a message that
+      // looks like the host's `ui/notifications/tool-result` notification.
+      document.querySelectorAll('button[data-tool]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const name = btn.dataset.tool;
+          const args = JSON.parse(btn.dataset.args);
+          const out = compute(name, args);
+          logEntry('llm', name, args, out);
+          w.postMessage({
+            jsonrpc: '2.0',
+            method: 'ui/notifications/tool-result',
+            params: { structuredContent: out },
+          }, '*');
+        });
+      });
+    });
+  </script>
+</body>
+</html>
