@@ -1,9 +1,17 @@
+[workspace]
+members = ["scientific-calculator-mcp-app-lambda"]
+resolver = "2"
+
 [package]
 name = "scientific-calculator-mcp-app"
 version = "0.1.0"
 edition = "2021"
 description = "Educational MCP Scientific Calculator: V1 primitive arithmetic tools + interactive keypad widget"
 publish = false
+
+[lib]
+name = "scientific_calculator_mcp_app"
+path = "src/lib.rs"
 
 [[bin]]
 name = "scientific-calculator-mcp-app"
