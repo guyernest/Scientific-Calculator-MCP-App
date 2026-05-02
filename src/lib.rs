@@ -7,14 +7,12 @@
 //!
 //! See `src/main.rs` for the V1 design narrative.
 
-use async_trait::async_trait;
-use pmcp::server::mcp_apps::{McpAppsAdapter, UIAdapter};
+use pmcp::server::simple_resources::ResourceCollection;
 use pmcp::server::typed_tool::TypedToolWithOutput;
 use pmcp::server::{Server, ServerBuilder};
-use pmcp::types::mcp_apps::{ExtendedUIMimeType, HostType};
-use pmcp::types::Content;
-use pmcp::types::{ListResourcesResult, ReadResourceResult, ResourceInfo};
-use pmcp::{RequestHandlerExtra, ResourceHandler, Result};
+use pmcp::types::mcp_apps::HostType;
+use pmcp::types::ui::{UIResource, UIResourceContents};
+use pmcp::{RequestHandlerExtra, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -224,69 +222,15 @@ fn negate_handler(
 }
 
 // =============================================================================
-// Resource Handler — serves the embedded keypad widget HTML.
-// =============================================================================
-
-struct CalculatorResources {
-    adapter: McpAppsAdapter,
-}
-
-impl CalculatorResources {
-    fn new() -> Self {
-        Self { adapter: McpAppsAdapter::new() }
-    }
-
-    fn lookup(name: &str) -> Option<&'static str> {
-        match name {
-            "keypad" | "keypad.html" => Some(KEYPAD_HTML),
-            _ => None,
-        }
-    }
-}
-
-#[async_trait]
-impl ResourceHandler for CalculatorResources {
-    async fn read(&self, uri: &str, _extra: RequestHandlerExtra) -> Result<ReadResourceResult> {
-        let name = uri
-            .strip_prefix("ui://app/")
-            .or_else(|| uri.strip_prefix("ui://calculator/"))
-            .map(|s| s.strip_suffix(".html").unwrap_or(s));
-
-        if let Some(widget_name) = name {
-            if let Some(html) = Self::lookup(widget_name) {
-                let transformed = self.adapter.transform(uri, widget_name, html);
-                return Ok(ReadResourceResult::new(vec![Content::Resource {
-                    uri: uri.to_string(),
-                    text: Some(transformed.content),
-                    mime_type: Some(ExtendedUIMimeType::HtmlMcpApp.to_string()),
-                    meta: None,
-                }]));
-            }
-        }
-
-        Err(pmcp::Error::protocol(
-            pmcp::ErrorCode::METHOD_NOT_FOUND,
-            format!("Resource not found: {}", uri),
-        ))
-    }
-
-    async fn list(
-        &self,
-        _cursor: Option<String>,
-        _extra: RequestHandlerExtra,
-    ) -> Result<ListResourcesResult> {
-        let resources = vec![ResourceInfo::new(KEYPAD_URI, "keypad")
-            .with_description("Interactive calculator keypad widget")
-            .with_mime_type(ExtendedUIMimeType::HtmlMcpApp.to_string())];
-        Ok(ListResourcesResult::new(resources))
-    }
-}
-
-// =============================================================================
 // Server builder — used by both the local HTTP binary and the Lambda wrapper.
 // =============================================================================
 
 pub fn build_server() -> Result<Server> {
+    let resources = ResourceCollection::new().add_ui_resource(
+        UIResource::html_mcp_app(KEYPAD_URI, "keypad"),
+        UIResourceContents::html(KEYPAD_URI, KEYPAD_HTML),
+    );
+
     ServerBuilder::new()
         .name("scientific-calculator")
         .version("0.1.0")
@@ -322,7 +266,7 @@ pub fn build_server() -> Result<Server> {
                 .with_description("Negate x. Returns { ok: true, op, inputs, result, display }.")
                 .with_ui(KEYPAD_URI),
         )
-        .resources(CalculatorResources::new())
+        .resources(resources)
         .with_host_layer(HostType::ChatGpt)
         .build()
 }
