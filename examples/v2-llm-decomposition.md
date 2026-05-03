@@ -32,7 +32,7 @@ reasoning visible for everything more complex.
 
 The keypad now exposes the V2 primitives as a row of scientific function
 keys above the arithmetic grid. Pressing one routes the current display
-number through `mcpBridge.callTool(...)` directly — the **server** path,
+number through `app.callServerTool(...)` (MCP Apps SDK) — the **server** path,
 not the LLM path. Each key bakes the explicit `(x, base)` pair into its
 label so the user sees what gets sent to the server:
 

@@ -33,7 +33,7 @@ acting as a small interactive calculator.
 | Path | Trigger | What happens |
 |---|---|---|
 | **Local UI** | Clicking digits/operators in the keypad | The widget updates its visible expression locally. No tool calls. The badge shows `local`. |
-| **Server compute** | Clicking `=` (or `+/-`) on a simple `a OP b` expression | The widget calls a primitive MCP tool (`add`, `subtract`, etc.) via `mcpBridge.callTool` and renders the structured result. The badge shows `server`. |
+| **Server compute** | Clicking `=` (or `+/-`) on a simple `a OP b` expression | The widget calls a primitive MCP tool (`add`, `subtract`, etc.) via `app.callServerTool` (MCP Apps SDK) and renders the structured result. The badge shows `server`. |
 | **LLM reasoning** | Typing math in the chat (e.g. _"compute 1 + 1"_) | The host LLM decomposes the request, calls primitive tools, and the host pushes each `structuredContent` to the widget via `ui/notifications/tool-result`. The badge shows `llm`. |
 
 V1 is intentionally minimal — it shows the three paths with five primitive
@@ -60,7 +60,7 @@ Three scientific primitives are added to give the LLM enough vocabulary:
 The keypad now exposes a row of scientific function keys above the
 arithmetic grid so a single number on the display can be routed directly
 to one of the V2 primitives via the **server** path
-(`mcpBridge.callTool`). Each key encodes the (x, base) pair in its label
+(`app.callServerTool`). Each key encodes the (x, base) pair in its label
 so the user can see exactly what the server is asked to compute:
 
 | Key | Tool call | Notes |
@@ -171,9 +171,9 @@ the LLM can reason about them without parsing free-form strings.
 - No calculator history (the chat transcript is the history).
 - No plotting or code mode (V4+). Scientific primitives arrive in V2; natural-language interpretation arrives in V3 — V1 has only the five arithmetic tools above.
 - No widget → LLM "send this prompt" routing — the MCP Apps SDK exposes
-  `mcpBridge.callTool` / `getState` / `setState` and pushes
-  `ui/notifications/tool-result`, but does not expose a "compose a chat
-  message on my behalf" API. See [SDK limitations](#sdk-limitations) below.
+  `app.callServerTool` and `app.ontoolresult`, but does not expose a
+  "compose a chat message on my behalf" API. See
+  [SDK limitations](#sdk-limitations) below.
 
 ## Run
 
@@ -205,11 +205,13 @@ curl -s -X POST http://localhost:3000 \
 xdg-open preview.html  # or: open preview.html
 ```
 
-`preview.html` mocks `window.mcpBridge` and adds buttons that simulate the
-host pushing `ui/notifications/tool-result` to the widget — so you can see
-both the **server** path (clicking `=` in the keypad) and the **LLM** path
-(clicking the simulator buttons in the side panel) without running an MCP
-host.
+`preview.html` is a **minimal mock MCP Apps host**: it answers the
+widget's `ui/initialize` handshake, replies to `tools/call` JSON-RPC
+requests (server path), and pushes `ui/notifications/tool-result` and
+`ui/notifications/interpretation` notifications to the iframe (LLM
+path). Everything flows over `postMessage` exactly as it would from
+Claude Desktop or ChatGPT Apps, so the preview exercises the same SDK
+plumbing as production.
 
 ## Test
 
@@ -224,22 +226,37 @@ structured-output JSON shape, and decomposition walk-throughs for
 `(3 + 5)^2 / log10(1000)` (V2) and the
 hypotenuse/circle-area word problems (V3).
 
+## MCP Apps SDK
+
+The widget uses the official
+[`@modelcontextprotocol/ext-apps`](https://www.npmjs.com/package/@modelcontextprotocol/ext-apps)
+SDK (loaded as an ES module from
+`https://esm.sh/@modelcontextprotocol/ext-apps@1.7.1`). There is no
+bundler step — `widgets/keypad.html` is the deployable artifact, and
+the server `include_str!`s it as-is. The SDK provides:
+
+- `new App({ name, version })` — constructor
+- `app.callServerTool({ name, arguments })` — widget → server tool call
+- `app.ontoolresult` / `app.ontoolinput` / `app.ontoolcancelled` /
+  `app.onteardown` / `app.onerror` — required handlers, registered
+  before `app.connect()`
+- `app.onhostcontextchanged` — react to host theme changes
+- `app.connect()` — handshake; with the default `autoResize: true` this
+  also installs a `ResizeObserver` so the widget no longer needs a
+  manual `notifyIntrinsicHeight` call
+- `app.getHostContext()` — read theme/locale once connect resolves
+
 ## SDK limitations
 
 The educational point of V1 is that a widget click should be able to
-"hand off" to the LLM for reasoning. The MCP Apps spec (SEP-1865) and the
-PMCP `McpAppsAdapter` reference example expose the following bridge
-surface:
-
-- `mcpBridge.callTool(name, args)` — widget → server tool call
-- `mcpBridge.getState()` / `setState(s)` — widget-local persistence
-- Inbound `ui/notifications/tool-result` messages with `structuredContent`
-
-There is no `mcpBridge.sendUserMessage()` or equivalent in the reference
-SDK. So when the user clicks `=` on an expression V1 can't evaluate (e.g.
-`1 + 2 * 3`, where precedence matters), the widget does the closest
-supported thing: it shows a hint pointing the user to ask the chat. When
-the user does, the LLM-driven path lights up automatically.
+"hand off" to the LLM for reasoning. The MCP Apps SDK exposes
+`app.callServerTool` for widget → server tool calls and
+`app.ontoolresult` for inbound results, but it does **not** expose a
+`sendUserMessage()` or equivalent. So when the user clicks `=` on an
+expression V1 can't evaluate (e.g. `1 + 2 * 3`, where precedence
+matters), the widget does the closest supported thing: it shows a hint
+pointing the user to ask the chat. When the user does, the LLM-driven
+path lights up automatically.
 
 V2 sidesteps this by leaning into the supported direction: the user types
 the expression in the chat, the LLM decomposes it into ordered primitive
@@ -253,12 +270,21 @@ exposing such a surface, and is left for a future iteration.
 V3 introduces a widget-side notification convention,
 `ui/notifications/interpretation`, that carries the LLM's
 phrasing/concept/expression/answer envelope into the widget alongside
-the V2 tool-result stream. pmcp 2.6 does not expose a typed API for
-the host to send custom widget notifications, so in production the
-host posts the envelope through the same `postMessage` channel it
-uses for tool results. The preview harness already does this. If a
-future pmcp release adds a typed "push interpretation envelope" API,
-the four-field shallow-merge contract above is what it should target.
+the V2 tool-result stream. `@modelcontextprotocol/ext-apps@1.7.1` does
+not expose a typed handler for arbitrary host-side notifications
+(`app.on*` covers tool input/result/cancellation, teardown, host-
+context changes, errors — and that's it), so the widget keeps a
+narrowly scoped raw `window.addEventListener('message', ...)` listener
+that ONLY accepts the `ui/notifications/interpretation` method.
+Everything else (tool results, lifecycle, theme) flows through the
+SDK. If a future SDK release adds a custom-notifications handler, the
+fallback listener can be deleted and the four-field shallow-merge
+contract above is what it should target.
+
+State persistence (`mcpBridge.setState` / `getState`) was used in
+earlier revisions of the widget; the SDK does not provide a direct
+equivalent and the keypad now renders entirely from the live tool
+result stream. The chat transcript is the history.
 
 ## File map
 
@@ -270,8 +296,8 @@ the four-field shallow-merge contract above is what it should target.
 │   └── main.rs           # Local HTTP binary
 ├── scientific-calculator-mcp-app-lambda/   # AWS Lambda wrapper
 ├── widgets/
-│   └── keypad.html       # Keypad + V2 step list + V3 interpretation panel
-├── preview.html          # Mock-bridge harness — V2 decomposition + V3 word-problem demos
+│   └── keypad.html       # Keypad + V2 step list + V3 interpretation panel (uses @modelcontextprotocol/ext-apps SDK)
+├── preview.html          # Mock MCP Apps host — V2 decomposition + V3 word-problem demos
 ├── examples/
 │   ├── v1-basic-arithmetic.md
 │   ├── v2-llm-decomposition.md

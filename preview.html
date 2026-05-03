@@ -65,6 +65,7 @@
     .log .ok { color: #6ee7b7; }
     .log .err { color: #ff9b9b; }
     .log .llm { color: #c4b5fd; }
+    .log .host { color: #9aa6c0; }
     p.note {
       font-size: 0.8rem;
       color: #9aa6c0;
@@ -81,6 +82,18 @@
 <body>
   <iframe id="widget" src="widgets/keypad.html"></iframe>
   <div class="panel">
+    <h2>About this preview</h2>
+    <p class="note">
+      The widget now talks to its host via the official
+      <code>@modelcontextprotocol/ext-apps</code> SDK. This preview acts as
+      a minimal mock host: it answers <code>ui/initialize</code>, replies
+      to <code>tools/call</code> JSON-RPC requests (server path), and
+      pushes <code>ui/notifications/tool-result</code> +
+      <code>ui/notifications/interpretation</code> notifications (LLM
+      path). All messages flow over <code>postMessage</code> exactly as
+      they would from a real MCP Apps host.
+    </p>
+
     <h2>Simulate the LLM reasoning path</h2>
     <p class="note">
       In a real MCP host (Claude Desktop, ChatGPT Apps), typing a math
@@ -103,7 +116,7 @@
       The widget itself now exposes <code>√x</code>, <code>x²</code>,
       <code>x<sup>y</sup></code>, <code>log₁₀</code>, and <code>ln</code>
       keys that route directly to these primitives via
-      <code>mcpBridge.callTool</code> (badge: <span style="color:#6ee7b7">server</span>).
+      <code>app.callServerTool</code> (badge: <span style="color:#6ee7b7">server</span>).
       The buttons below simulate the alternative path — the host LLM pushing
       the same tool results in via <code>ui/notifications/tool-result</code>
       (badge: <span style="color:#c4b5fd">llm</span>).
@@ -161,11 +174,13 @@
 
     function logEntry(kind, name, args, out) {
       calls.push({ kind, name, args, out, t: new Date().toISOString().slice(11, 19) });
-      const html = calls.map(c =>
-        '<span class="' + (c.out && (c.out.ok === 'false' || c.out.code) ? 'err' : (c.kind === 'llm' ? 'llm' : 'ok')) + '">' +
-        c.t + '  [' + c.kind + ']  ' + c.name + '(' + JSON.stringify(c.args) + ')\n  -> ' +
-        JSON.stringify(c.out) + '</span>'
-      ).join('\n\n');
+      const html = calls.map(c => {
+        const isErr = c.out && (c.out.ok === 'false' || c.out.code);
+        const cls = isErr ? 'err' : (c.kind === 'llm' ? 'llm' : (c.kind === 'host' ? 'host' : 'ok'));
+        return '<span class="' + cls + '">' +
+          c.t + '  [' + c.kind + ']  ' + c.name + '(' + JSON.stringify(c.args) + ')\n  -> ' +
+          JSON.stringify(c.out) + '</span>';
+      }).join('\n\n');
       logEl.innerHTML = html;
       logEl.scrollTop = logEl.scrollHeight;
     }
@@ -248,39 +263,107 @@
       return { ok: 'false', op: name, inputs: [], code: 'unknown_tool', message: 'Unknown tool: ' + name };
     }
 
-    widget.addEventListener('load', () => {
-      const w = widget.contentWindow;
+    // -------------------------------------------------------------------
+    // Mock MCP Apps host
+    //
+    // The widget now uses @modelcontextprotocol/ext-apps. Its
+    // PostMessageTransport sends JSON-RPC requests/notifications to
+    // window.parent and listens for responses on window.message. We play
+    // the host: respond to ui/initialize and tools/call, and let the
+    // simulated-LLM buttons push notifications back into the widget.
+    // -------------------------------------------------------------------
+    function postToWidget(msg) {
+      try {
+        widget.contentWindow.postMessage(msg, '*');
+      } catch (_) { /* iframe not ready yet */ }
+    }
 
-      // Mock the MCP bridge for the in-widget (server-path) tool calls.
-      w.mcpBridge = {
-        callTool: async (name, args) => {
-          const out = compute(name, args);
-          logEntry('server', name, args, out);
-          return out;
-        },
-        getState: () => {
-          try { return JSON.parse(localStorage.getItem('calc_state') || '{}'); }
-          catch (_) { return {}; }
-        },
-        setState: (s) => {
-          try { localStorage.setItem('calc_state', JSON.stringify(s)); } catch (_) {}
-        },
-        theme: 'dark',
-      };
+    window.addEventListener('message', (event) => {
+      if (event.source !== widget.contentWindow) return;
+      const msg = event.data;
+      if (!msg || msg.jsonrpc !== '2.0') return;
 
-      // Wire up the simulated LLM-path buttons. We post a message that
-      // looks like the host's `ui/notifications/tool-result` notification.
-      function pushLLM(name, args) {
-        const out = compute(name, args);
-        logEntry('llm', name, args, out);
-        w.postMessage({
+      // Requests carry an `id` and a `method`; notifications have a
+      // `method` but no `id`. We only reply to requests.
+      if (msg.method === 'ui/initialize' && msg.id !== undefined) {
+        // Minimal accept — echo a protocol version and empty caps.
+        // Theme is delivered later via getHostContext / onhostcontextchanged.
+        postToWidget({
           jsonrpc: '2.0',
-          method: 'ui/notifications/tool-result',
-          params: { structuredContent: out },
-        }, '*');
-        return out;
+          id: msg.id,
+          result: {
+            protocolVersion: '2026-01-26',
+            hostCapabilities: {},
+            hostInfo: { name: 'preview-harness', version: '1.0.0' },
+            hostContext: { theme: 'dark' },
+          },
+        });
+        logEntry('host', 'ui/initialize', {}, { ok: 'true' });
+        return;
       }
 
+      if (msg.method === 'tools/call' && msg.id !== undefined) {
+        const name = msg.params && msg.params.name;
+        const args = (msg.params && msg.params.arguments) || {};
+        const out = compute(name, args);
+        logEntry('server', name, args, out);
+        // The MCP CallToolResult shape: structuredContent + content +
+        // isError. The widget reads structuredContent.
+        postToWidget({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            structuredContent: out,
+            content: [{ type: 'text', text: JSON.stringify(out) }],
+            isError: out && (out.ok === 'false' || !!out.code),
+          },
+        });
+        return;
+      }
+
+      // Acknowledge other notifications (e.g. ui/notifications/size-changed)
+      // silently — they don't need a reply. We just log size-changed at
+      // debug level so the panel doesn't get noisy.
+      if (msg.method && msg.method.startsWith('ui/notifications/')) {
+        // no-op
+        return;
+      }
+    });
+
+    // -------------------------------------------------------------------
+    // Simulated LLM-path push.
+    //
+    // The host pushes ui/notifications/tool-result so the widget's
+    // app.ontoolresult handler fires. Shape mirrors CallToolResult.
+    // -------------------------------------------------------------------
+    function pushLLM(name, args) {
+      const out = compute(name, args);
+      logEntry('llm', name, args, out);
+      postToWidget({
+        jsonrpc: '2.0',
+        method: 'ui/notifications/tool-result',
+        params: {
+          structuredContent: out,
+          content: [{ type: 'text', text: JSON.stringify(out) }],
+          isError: out && (out.ok === 'false' || !!out.code),
+        },
+      });
+      return out;
+    }
+
+    function pushInterpretation(env) {
+      // ui/notifications/interpretation has no SDK handler today, so the
+      // widget keeps a narrowly scoped raw message listener for it. The
+      // shape is freeform (the spec doesn't define this notification).
+      postToWidget({
+        jsonrpc: '2.0',
+        method: 'ui/notifications/interpretation',
+        params: env,
+      });
+      logEntry('llm', 'interpretation', env, env);
+    }
+
+    widget.addEventListener('load', () => {
       document.querySelectorAll('button[data-tool]').forEach(btn => {
         btn.addEventListener('click', () => {
           const name = btn.dataset.tool;
@@ -312,42 +395,14 @@
       // uses the widget's own clear flow rather than poking at state.
       document.getElementById('clear-steps-host').addEventListener('click', () => {
         try {
-          const btn = w.document.getElementById('steps-clear');
+          const btn = widget.contentWindow.document.getElementById('steps-clear');
           if (btn) btn.click();
         } catch (_) { /* preview-only convenience */ }
       });
 
-      // ---------------------------------------------------------------
-      // V3 — natural-language demo runners.
-      //
-      // Each demo simulates the LLM doing three things in order:
-      //   1. Parse the user's phrasing and emit an interpretation
-      //      envelope (phrasing → concept → expression). The widget
-      //      shows it immediately so the user sees what the LLM
-      //      *thinks* the math is, before any tools are called.
-      //   2. Issue the primitive tool calls one by one, each pushed to
-      //      the widget as `ui/notifications/tool-result`. Each lands
-      //      in the step list.
-      //   3. Push a completion envelope that fills in the final
-      //      `answer` row of the interpretation panel.
-      //
-      // The point of the preview is to make the V3 teaching loop
-      // visible without needing a real host LLM.
-      // ---------------------------------------------------------------
-      function pushInterpretation(env) {
-        w.postMessage({
-          jsonrpc: '2.0',
-          method: 'ui/notifications/interpretation',
-          params: env,
-        }, '*');
-        logEntry('llm', 'interpretation', env, env);
-      }
-
-      // Wipe the widget back to a clean state before kicking off a new
-      // word-problem demo so the teaching loop starts fresh each time.
       function resetWidget() {
         try {
-          const btn = w.document.getElementById('steps-clear');
+          const btn = widget.contentWindow.document.getElementById('steps-clear');
           if (btn) btn.click();
         } catch (_) { /* best-effort */ }
       }
