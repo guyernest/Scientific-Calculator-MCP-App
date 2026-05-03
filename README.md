@@ -55,8 +55,31 @@ Three scientific primitives are added to give the LLM enough vocabulary:
 - `sqrt(x)` — `domain_error` for `x < 0`
 - `log(x, base)` — explicit base; `domain_error` for `x <= 0`, `base <= 0`, `base == 1`
 
-The canonical demo: typing _"compute (3 + 5)^2 / log10(1000)"_ in chat
-makes the LLM emit, in order:
+### V2 widget keys: `√x`, `x²`, `xʸ`, `log₁₀`, `ln`
+
+The keypad now exposes a row of scientific function keys above the
+arithmetic grid so a single number on the display can be routed directly
+to one of the V2 primitives via the **server** path
+(`mcpBridge.callTool`). Each key encodes the (x, base) pair in its label
+so the user can see exactly what the server is asked to compute:
+
+| Key | Tool call | Notes |
+|---|---|---|
+| `√x` | `sqrt(x)` | unary; `domain_error` if `x < 0` |
+| `x²` | `power(x, 2)` | shortcut for the common case |
+| `xʸ` | `power(a, b)` | new infix `^` operator; `=` resolves it |
+| `log₁₀` | `log(x, 10)` | base 10; explicit in the label |
+| `ln` | `log(x, e)` | base e; explicit in the label |
+
+Arbitrary-base logs and full expressions (like `(3 + 5)^2 / log10(1000)`)
+still route through the **LLM** path: ask the chat, the host LLM
+decomposes the expression into ordered primitive tool calls, and each
+result is pushed to the widget's step list. The widget keys handle the
+single-step scientific cases; chat handles the multi-step reasoning.
+That split is the educational point.
+
+The canonical chat demo: typing _"compute (3 + 5)^2 / log10(1000)"_ in
+chat makes the LLM emit, in order:
 
 1. `add(3, 5)` → `8`
 2. `power(8, 2)` → `64`

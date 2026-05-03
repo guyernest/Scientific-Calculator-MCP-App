@@ -19,7 +19,7 @@
       border: 1px solid #243763;
       border-radius: 12px;
       width: 100%;
-      height: 720px;
+      height: 780px;
       background: #1a1a2e;
     }
     .panel {
@@ -99,6 +99,15 @@
     </div>
 
     <h2>V2 — scientific primitives</h2>
+    <p class="note">
+      The widget itself now exposes <code>√x</code>, <code>x²</code>,
+      <code>x<sup>y</sup></code>, <code>log₁₀</code>, and <code>ln</code>
+      keys that route directly to these primitives via
+      <code>mcpBridge.callTool</code> (badge: <span style="color:#6ee7b7">server</span>).
+      The buttons below simulate the alternative path — the host LLM pushing
+      the same tool results in via <code>ui/notifications/tool-result</code>
+      (badge: <span style="color:#c4b5fd">llm</span>).
+    </p>
     <div class="row">
       <button data-tool="power" data-args='{"base":2,"exponent":10}'>power(2, 10)</button>
       <button data-tool="sqrt" data-args='{"x":64}'>sqrt(64)</button>

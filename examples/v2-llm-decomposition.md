@@ -1,8 +1,13 @@
 # V2 Example — LLM Decomposition & Operator Precedence
 
-V2 adds three scientific primitives (`power`, `sqrt`, `log`) and a widget
+V2 adds three scientific primitives (`power`, `sqrt`, `log`), a row of
+visible **scientific function keys** on the keypad, and a widget
 **step list** that visualizes the ordered tool calls an LLM makes when
 decomposing a non-trivial expression.
+
+The keys make the V2 server tools discoverable from the widget itself
+for single-step cases; the step list keeps the LLM's multi-step
+reasoning visible for everything more complex.
 
 > **Teaching point.** Operator precedence is *not* solved by a server-side
 > expression parser. The MCP host LLM is responsible for reading the user's
@@ -22,6 +27,36 @@ decomposing a non-trivial expression.
 | `power(base, exponent)` | binary | New. `base^exponent`. Domain errors for non-finite results (e.g. `0^-1`, `(-1)^0.5`). |
 | `sqrt(x)` | unary | New. Domain error for `x < 0`. |
 | `log(x, base)` | binary | New. Explicit base. Domain error if `x <= 0`, `base <= 0`, or `base == 1`. Use `base = 10` for log10, `base = e` for ln. |
+
+## V2 widget keys (server path)
+
+The keypad now exposes the V2 primitives as a row of scientific function
+keys above the arithmetic grid. Pressing one routes the current display
+number through `mcpBridge.callTool(...)` directly — the **server** path,
+not the LLM path. Each key bakes the explicit `(x, base)` pair into its
+label so the user sees what gets sent to the server:
+
+| Key | Tool call | Role |
+|---|---|---|
+| `√x` | `sqrt(x)` | unary; press after typing the operand |
+| `x²` | `power(x, 2)` | shortcut for the most common power |
+| `xʸ` | `power(a, b)` | binary; introduces the `^` operator on the keypad and `=` resolves it |
+| `log₁₀` | `log(x, 10)` | base 10 explicit in the key label |
+| `ln` | `log(x, e)` | base e explicit in the key label |
+
+Why these five? They cover the single-step scientific operations users
+can express with a single number on the display. Anything that needs
+ordering or composition — multi-arg expressions, arbitrary log bases,
+nested functions — is what the LLM decomposition path is for. Press the
+keys for `sqrt(64)`, ask the chat for `(3 + 5)^2 / log10(1000)`. The
+result-line badge tells you which path produced the answer
+(`server` for keypad-initiated calls, `llm` for chat-initiated calls).
+
+We deliberately don't add an arbitrary-base log key on the widget —
+exposing two unbounded inputs (x and base) on a calculator keypad is
+awkward, and the ergonomically natural place for "log base 7 of 343" is
+the chat. The LLM will issue `log(343, 7)` directly and the widget
+renders it in the step list.
 
 All tools return the same discriminated-union shape introduced in V1:
 
