@@ -93,6 +93,62 @@ See [`examples/v2-llm-decomposition.md`](examples/v2-llm-decomposition.md)
 for the full walk-through. `preview.html` includes a **Run decomposition**
 button that simulates the host pushing this exact sequence.
 
+## V3: Natural-language math & interpretation visibility
+
+V3 takes the same separation one layer up — the user types a *word
+problem* in chat, and the LLM has to recognize the math before it can
+call any tools. The widget gains an **interpretation panel** that
+visualizes the full teaching loop:
+
+```
+user phrasing  →  interpreted math  →  executed tool calls  →  final answer
+```
+
+The canonical V3 demo:
+
+> *What is the hypotenuse of a right triangle with sides 5 and 12?*
+
+The host LLM emits an interpretation envelope (`Pythagorean theorem:
+c = √(a² + b²)`, expression `√(5² + 12²)`), then the four ordered
+primitive calls — `power(5, 2)`, `power(12, 2)`, `add(25, 144)`,
+`sqrt(169)` — and finally a completion envelope with
+`answer: "13"`. The widget shows the interpretation rows, the step
+list grows in real time, and the answer row settles to `13`.
+
+V3 also adds **one new primitive**: `get_constant(name)` for `pi` /
+`e`. This exists so the LLM can look up π while decomposing a circle-
+area question (`area of a circle with radius 3` → `get_constant("pi")`,
+`power(3, 2)`, `multiply(π, 9)`) without the server needing to know
+what "circle" means.
+
+| Tool | Signature | Notes |
+|---|---|---|
+| `get_constant(name)` | `name: "pi"\|"e"` | New in V3. Returns the same `CalcOutput` shape as the arithmetic tools. Unknown names return `{ ok: false, code: 'unknown_constant', ... }`. |
+
+The widget listens for a new client-side notification,
+`ui/notifications/interpretation`, with a four-field envelope:
+
+```jsonc
+{
+  "phrasing": "What is the hypotenuse of a right triangle with sides 5 and 12?",
+  "concept":  "Pythagorean theorem: c = √(a² + b²)",
+  "expression": "√(5² + 12²)"
+}
+```
+
+The host typically sends two of these per word problem — one before
+the tool calls and one after with the final `answer` — and each
+envelope is shallow-merged into widget state.
+
+The teaching point is unchanged: the **server stays a flat collection
+of primitives**. It does not parse phrasing. Interpretation lives in
+the LLM and is *displayed* by the widget. See
+[`examples/v3-natural-language-math.md`](examples/v3-natural-language-math.md)
+for the full walk-through. `preview.html` includes
+**Hypotenuse**, **Circle area**, and **20% discount** buttons that
+simulate the host pushing the interpretation + tool-result sequence
+end-to-end.
+
 ### V1 server tools
 
 Every tool returns the same discriminated-union shape:
@@ -113,7 +169,7 @@ the LLM can reason about them without parsing free-form strings.
 
 - No `evaluate_expression` parser on the server.
 - No calculator history (the chat transcript is the history).
-- No plotting or code mode (V3+). Scientific primitives arrive in V2 — V1 has only the five arithmetic tools above.
+- No plotting or code mode (V4+). Scientific primitives arrive in V2; natural-language interpretation arrives in V3 — V1 has only the five arithmetic tools above.
 - No widget → LLM "send this prompt" routing — the MCP Apps SDK exposes
   `mcpBridge.callTool` / `getState` / `setState` and pushes
   `ui/notifications/tool-result`, but does not expose a "compose a chat
@@ -161,10 +217,12 @@ host.
 cargo test
 ```
 
-Tests cover all primitives (V1 arithmetic + V2 scientific), divide-by-zero,
-domain errors (`sqrt(-1)`, `log(0, 10)`, `power(-1, 0.5)`, …),
-NaN/Infinity handling, the structured-output JSON shape, and a
-decomposition walk-through for `(3 + 5)^2 / log10(1000)`.
+Tests cover all primitives (V1 arithmetic + V2 scientific + V3
+`get_constant`), divide-by-zero, domain errors (`sqrt(-1)`,
+`log(0, 10)`, `power(-1, 0.5)`, …), NaN/Infinity handling, the
+structured-output JSON shape, and decomposition walk-throughs for
+`(3 + 5)^2 / log10(1000)` (V2) and the
+hypotenuse/circle-area word problems (V3).
 
 ## SDK limitations
 
@@ -192,20 +250,31 @@ owns arithmetic") is visible without inventing a new bridge API. A
 proper widget → LLM "send this prompt" handoff still depends on the SDK
 exposing such a surface, and is left for a future iteration.
 
+V3 introduces a widget-side notification convention,
+`ui/notifications/interpretation`, that carries the LLM's
+phrasing/concept/expression/answer envelope into the widget alongside
+the V2 tool-result stream. pmcp 2.6 does not expose a typed API for
+the host to send custom widget notifications, so in production the
+host posts the envelope through the same `postMessage` channel it
+uses for tool results. The preview harness already does this. If a
+future pmcp release adds a typed "push interpretation envelope" API,
+the four-field shallow-merge contract above is what it should target.
+
 ## File map
 
 ```
 .
 ├── Cargo.toml
 ├── src/
-│   ├── lib.rs            # PMCP server: primitive tools (V1) + scientific (V2)
+│   ├── lib.rs            # PMCP server: V1 arithmetic + V2 scientific + V3 get_constant
 │   └── main.rs           # Local HTTP binary
 ├── scientific-calculator-mcp-app-lambda/   # AWS Lambda wrapper
 ├── widgets/
-│   └── keypad.html       # Interactive keypad widget + V2 step-list view
-├── preview.html          # Mock-bridge harness with V2 decomposition demo
+│   └── keypad.html       # Keypad + V2 step list + V3 interpretation panel
+├── preview.html          # Mock-bridge harness — V2 decomposition + V3 word-problem demos
 ├── examples/
 │   ├── v1-basic-arithmetic.md
-│   └── v2-llm-decomposition.md
+│   ├── v2-llm-decomposition.md
+│   └── v3-natural-language-math.md
 └── README.md
 ```

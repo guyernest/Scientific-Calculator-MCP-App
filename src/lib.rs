@@ -15,6 +15,14 @@
 //! no `evaluate_expression` parser. Operator precedence is the LLM's job;
 //! the widget visualizes the ordered decomposition in a step list.
 //!
+//! V3: adds `get_constant(name)` so the LLM can look up `pi` / `e` while
+//! decomposing word problems (e.g. circle area) into primitive arithmetic.
+//! The widget gains an *interpretation* panel that captures the natural-
+//! language teaching loop:
+//! `user phrasing → interpreted math → executed tool calls → final answer`.
+//! The server still does not parse phrasing; interpretation lives in the
+//! LLM and is *displayed* by the widget.
+//!
 //! See `src/main.rs` for the design narrative and `examples/` for usage.
 
 use pmcp::server::simple_resources::ResourceCollection;
@@ -66,6 +74,13 @@ pub struct LogInput {
     pub x: f64,
     /// Logarithm base (must be > 0 and != 1).
     pub base: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct ConstantInput {
+    /// Name of the mathematical constant to look up. Currently supports
+    /// `"pi"` and `"e"` (case-insensitive).
+    pub name: String,
 }
 
 // =============================================================================
@@ -296,6 +311,46 @@ pub fn log(x: f64, base: f64) -> CalcOutput {
     CalcOutput::ok("log", vec![x, base], x.log(base))
 }
 
+// =============================================================================
+// V3 — Mathematical constants
+//
+// `get_constant(name)` lets the LLM look up π and e while decomposing word
+// problems (e.g. "area of a circle with radius 3" → `power(3, 2)` then
+// `multiply(pi, 9)`). It returns the same CalcOutput shape as the arithmetic
+// tools so the widget's step list and interpretation panel can render it
+// uniformly. The server still doesn't parse phrasing — it just hands the LLM
+// a primitive lookup it can compose with the arithmetic primitives.
+// =============================================================================
+
+pub fn get_constant(name: &str) -> CalcOutput {
+    let key = name.trim().to_lowercase();
+    let (canonical, value) = match key.as_str() {
+        "pi" | "π" => ("pi", std::f64::consts::PI),
+        "e" => ("e", std::f64::consts::E),
+        _ => {
+            return CalcOutput::Err {
+                error: CalcError {
+                    op: "get_constant".to_string(),
+                    inputs: vec![],
+                    code: "unknown_constant".to_string(),
+                    message: format!(
+                        "Unknown constant '{}'. Supported: pi, e.",
+                        name
+                    ),
+                },
+            };
+        }
+    };
+    CalcOutput::Ok {
+        value: CalcResult {
+            op: format!("get_constant({})", canonical),
+            inputs: vec![],
+            result: value,
+            display: format_number(value),
+        },
+    }
+}
+
 macro_rules! binary_handler {
     ($name:ident, $f:ident) => {
         fn $name(
@@ -338,6 +393,13 @@ fn log_handler(
     _extra: RequestHandlerExtra,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CalcOutput>> + Send>> {
     Box::pin(async move { Ok(log(input.x, input.base)) })
+}
+
+fn get_constant_handler(
+    input: ConstantInput,
+    _extra: RequestHandlerExtra,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CalcOutput>> + Send>> {
+    Box::pin(async move { Ok(get_constant(&input.name)) })
 }
 
 // =============================================================================
@@ -412,6 +474,21 @@ pub fn build_server() -> Result<Server> {
                      For x <= 0 or base <= 0 or base == 1, returns \
                      { ok: false, code: 'domain_error', ... }. \
                      Use base = 10 for log10, base = 2.718281828459045 for ln.",
+                )
+                .with_ui(KEYPAD_URI),
+        )
+        .tool(
+            "get_constant",
+            TypedToolWithOutput::new("get_constant", get_constant_handler)
+                .with_description(
+                    "Look up a mathematical constant by name. Supported names: \
+                     'pi' (3.14159…) and 'e' (2.71828…). Returns the same \
+                     CalcOutput shape as the arithmetic tools so the result \
+                     can be fed directly into multiply/divide/power. \
+                     Useful when decomposing word problems like 'area of a \
+                     circle with radius r' → get_constant('pi'), \
+                     power(r, 2), multiply(pi, r²). Unknown names return \
+                     { ok: false, code: 'unknown_constant', ... }.",
                 )
                 .with_ui(KEYPAD_URI),
         )
@@ -622,6 +699,91 @@ mod tests {
                 assert!((value.result - 64.0 / 3.0).abs() < 1e-9);
             }
             CalcOutput::Err { error } => panic!("final divide failed: {:?}", error),
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // V3 — natural-language helpers
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn get_constant_pi_and_e() {
+        match get_constant("pi") {
+            CalcOutput::Ok { value } => {
+                assert_eq!(value.op, "get_constant(pi)");
+                assert!((value.result - std::f64::consts::PI).abs() < 1e-12);
+                assert!(value.inputs.is_empty());
+            }
+            CalcOutput::Err { error } => panic!("expected Ok, got {:?}", error),
+        }
+        match get_constant("E") {
+            CalcOutput::Ok { value } => {
+                assert_eq!(value.op, "get_constant(e)");
+                assert!((value.result - std::f64::consts::E).abs() < 1e-12);
+            }
+            CalcOutput::Err { error } => panic!("expected Ok, got {:?}", error),
+        }
+        // Unicode π and stray whitespace both resolve.
+        match get_constant("  π  ") {
+            CalcOutput::Ok { value } => {
+                assert!((value.result - std::f64::consts::PI).abs() < 1e-12);
+            }
+            CalcOutput::Err { error } => panic!("expected Ok for π, got {:?}", error),
+        }
+    }
+
+    #[test]
+    fn get_constant_unknown_is_structured_error() {
+        match get_constant("phi") {
+            CalcOutput::Err { error } => {
+                assert_eq!(error.code, "unknown_constant");
+                assert_eq!(error.op, "get_constant");
+                assert!(error.message.to_lowercase().contains("unknown"));
+            }
+            CalcOutput::Ok { value } => panic!("expected Err, got {:?}", value),
+        }
+    }
+
+    /// Walks the canonical V3 word-problem decomposition for the
+    /// hypotenuse of a right triangle with legs 5 and 12. The LLM
+    /// translates the natural-language phrasing into four primitive
+    /// tool calls; the server provides each step.
+    #[test]
+    fn hypotenuse_word_problem_decomposes_to_primitives() {
+        let s1 = power(5.0, 2.0);
+        assert_ok(&s1, "power", 25.0);
+        let s2 = power(12.0, 2.0);
+        assert_ok(&s2, "power", 144.0);
+        let a_sq = match &s1 { CalcOutput::Ok { value } => value.result, _ => panic!() };
+        let b_sq = match &s2 { CalcOutput::Ok { value } => value.result, _ => panic!() };
+        let s3 = add(a_sq, b_sq);
+        assert_ok(&s3, "add", 169.0);
+        let sum = match &s3 { CalcOutput::Ok { value } => value.result, _ => panic!() };
+        let s4 = sqrt(sum);
+        assert_ok(&s4, "sqrt", 13.0);
+    }
+
+    /// Walks the circle-area word problem for radius 3:
+    ///   get_constant("pi") → π
+    ///   power(3, 2)        → 9
+    ///   multiply(π, 9)     → 9π
+    /// This exercises the V3 `get_constant` tool composing with V2 power
+    /// and V1 multiply.
+    #[test]
+    fn circle_area_word_problem_uses_get_constant() {
+        let pi = match get_constant("pi") {
+            CalcOutput::Ok { value } => value.result,
+            CalcOutput::Err { error } => panic!("get_constant(pi) failed: {:?}", error),
+        };
+        let r_sq = match power(3.0, 2.0) {
+            CalcOutput::Ok { value } => value.result,
+            CalcOutput::Err { error } => panic!("power(3,2) failed: {:?}", error),
+        };
+        match multiply(pi, r_sq) {
+            CalcOutput::Ok { value } => {
+                assert!((value.result - std::f64::consts::PI * 9.0).abs() < 1e-9);
+            }
+            CalcOutput::Err { error } => panic!("multiply failed: {:?}", error),
         }
     }
 

@@ -1,4 +1,4 @@
-//! Scientific Calculator MCP App — V2 (local HTTP binary)
+//! Scientific Calculator MCP App — V3 (local HTTP binary)
 //!
 //! Educational MCP server that exposes primitive arithmetic + scientific
 //! tools and serves an interactive calculator-keypad widget. The point is
@@ -16,11 +16,15 @@
 //!    `mcpBridge.callTool(...)`. Server is the only place authoritative
 //!    arithmetic happens.
 //!
-//! V1 deliberately avoided scientific functions; V2 adds `power`, `sqrt`,
+//! V1 deliberately avoided scientific functions; V2 added `power`, `sqrt`,
 //! `log` so the LLM can decompose expressions like `(3 + 5)^2 / log10(1000)`
-//! into primitive tool calls. There is still no server-side expression
-//! parser, no calculator history (the chat transcript + step list are the
-//! history), no plotting, and no code mode (those are V3+).
+//! into primitive tool calls. V3 adds `get_constant` (π, e) and an
+//! interpretation panel in the widget so natural-language word problems
+//! ("hypotenuse of a right triangle with sides 5 and 12") expose the full
+//! teaching loop: phrasing → interpreted math → executed primitive tool
+//! calls → final answer. There is still no server-side expression parser,
+//! no calculator history (the chat transcript + step list are the history),
+//! no plotting, and no code mode (those are V4+).
 //!
 //! All server building lives in `lib.rs` so the Lambda wrapper crate
 //! (`scientific-calculator-mcp-app-lambda`) can reuse it.
@@ -58,7 +62,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
-    println!("Scientific Calculator MCP Server (V2) running at http://{}", bound_addr);
+    println!("Scientific Calculator MCP Server (V3) running at http://{}", bound_addr);
     println!();
     println!("Tools (V1 — arithmetic):");
     println!("  - add(a, b)              Add two numbers.");
@@ -71,6 +75,9 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("  - power(base, exponent)  base^exponent. domain_error for non-finite results.");
     println!("  - sqrt(x)                Square root. domain_error for x < 0.");
     println!("  - log(x, base)           log base of x. domain_error for x <= 0, base <= 0, base == 1.");
+    println!();
+    println!("Tools (V3 — natural language helpers):");
+    println!("  - get_constant(name)     Look up 'pi' or 'e' as a primitive value the LLM can compose with.");
     println!();
     println!("Widget resource: ui://app/keypad");
     println!();
