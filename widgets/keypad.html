@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Calculator</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 16px;
+    }
+    .container { max-width: 360px; width: 100%; }
+
+    h1 {
+      text-align: center;
+      font-size: 1.1rem;
+      color: #aaa;
+      margin-bottom: 8px;
+      font-weight: 500;
+      letter-spacing: 0.04em;
+    }
+
+    /* The display area shows the local expression on the top, the result on
+       the bottom, and a small badge telling the user which "path" produced
+       the result so the educational point is visible. */
+    .display {
+      background: #0f3460;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+      min-height: 96px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .expr {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 1.4rem;
+      color: #fff;
+      word-break: break-all;
+      min-height: 1.6rem;
+    }
+    .expr .placeholder { color: #6f7a90; }
+
+    .result-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .result {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 1.6rem;
+      color: #4ade80;
+      text-align: right;
+      flex: 1;
+      word-break: break-all;
+    }
+    .result.error { color: #ff6b6b; }
+    .result.muted { color: #5a6680; }
+
+    .badge {
+      font-size: 0.7rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #16213e;
+      color: #9aa6c0;
+      white-space: nowrap;
+      align-self: flex-end;
+      margin-bottom: 4px;
+    }
+    .badge.local    { background: #16213e; color: #9aa6c0; }
+    .badge.server   { background: #0e3b2a; color: #6ee7b7; }
+    .badge.llm      { background: #2a1d4d; color: #c4b5fd; }
+    .badge.error    { background: #4a1515; color: #ff9b9b; }
+
+    .keypad {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+    button.key {
+      background: #243763;
+      color: #fff;
+      border: none;
+      padding: 14px 0;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1.1rem;
+      font-weight: 500;
+      transition: filter 0.1s ease, transform 0.05s ease;
+      font-family: inherit;
+    }
+    button.key:hover { filter: brightness(1.15); }
+    button.key:active { transform: translateY(1px); }
+    button.key.op    { background: #3a4d8c; }
+    button.key.eq    { background: #16a34a; grid-column: span 2; }
+    button.key.util  { background: #4a4a5e; }
+
+    .hint {
+      margin-top: 12px;
+      padding: 10px 12px;
+      background: #16213e;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      color: #9aa6c0;
+      line-height: 1.4;
+      display: none;
+    }
+    .hint.visible { display: block; }
+    .hint code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: #0f3460;
+      padding: 1px 5px;
+      border-radius: 4px;
+      color: #c4b5fd;
+    }
+
+    .legend {
+      margin-top: 12px;
+      font-size: 0.72rem;
+      color: #6f7a90;
+      line-height: 1.4;
+    }
+    .legend strong { color: #aab3c8; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>MCP Calculator — V1</h1>
+
+    <div class="display" aria-live="polite">
+      <div id="expr" class="expr"><span class="placeholder">tap keys&hellip;</span></div>
+      <div class="result-row">
+        <span id="badge" class="badge local">local</span>
+        <div id="result" class="result muted">&mdash;</div>
+      </div>
+    </div>
+
+    <div class="keypad">
+      <button class="key util" data-action="clear">C</button>
+      <button class="key util" data-action="back">&larr;</button>
+      <button class="key util" data-action="negate">+/-</button>
+      <button class="key op" data-op="/">&divide;</button>
+
+      <button class="key" data-digit="7">7</button>
+      <button class="key" data-digit="8">8</button>
+      <button class="key" data-digit="9">9</button>
+      <button class="key op" data-op="*">&times;</button>
+
+      <button class="key" data-digit="4">4</button>
+      <button class="key" data-digit="5">5</button>
+      <button class="key" data-digit="6">6</button>
+      <button class="key op" data-op="-">&minus;</button>
+
+      <button class="key" data-digit="1">1</button>
+      <button class="key" data-digit="2">2</button>
+      <button class="key" data-digit="3">3</button>
+      <button class="key op" data-op="+">+</button>
+
+      <button class="key" data-digit="0">0</button>
+      <button class="key" data-digit=".">.</button>
+      <button class="key eq" data-action="equals">=</button>
+    </div>
+
+    <div id="hint" class="hint"></div>
+
+    <div class="legend">
+      <strong>Three paths.</strong>
+      <span style="color:#9aa6c0">Local</span> = keypad updates the display only.
+      <span style="color:#6ee7b7">Server</span> = widget called a primitive MCP tool.
+      <span style="color:#c4b5fd">LLM</span> = the chat LLM decomposed the request and called tools.
+    </div>
+  </div>
+
+  <script>
+    // ---------------------------------------------------------------------
+    // Local widget state. The chat transcript is the history; the widget
+    // owns only "the current calculator moment".
+    // ---------------------------------------------------------------------
+    const state = {
+      // Tokens the user has typed so far. Each token is either a number
+      // string (e.g. "12.5") or one of "+", "-", "*", "/".
+      tokens: [],
+      // The last result that was displayed, and where it came from.
+      lastResult: null,    // string | null
+      lastBadge: 'local',  // 'local' | 'server' | 'llm' | 'error'
+    };
+
+    // ---------------------------------------------------------------------
+    // DOM
+    // ---------------------------------------------------------------------
+    const exprEl = document.getElementById('expr');
+    const resultEl = document.getElementById('result');
+    const badgeEl = document.getElementById('badge');
+    const hintEl = document.getElementById('hint');
+
+    // Map UI ops -> server tool name. V1 only has 4 binary primitives.
+    const TOOL_FOR_OP = {
+      '+': 'add',
+      '-': 'subtract',
+      '*': 'multiply',
+      '/': 'divide',
+    };
+    const SYMBOL_FOR_OP = { '+': '+', '-': '−', '*': '×', '/': '÷' };
+
+    // ---------------------------------------------------------------------
+    // PATH 1 — Local UI updates. Pure DOM/state, no tool calls.
+    // ---------------------------------------------------------------------
+    function pressDigit(d) {
+      const last = state.tokens[state.tokens.length - 1];
+      if (last === undefined || isOperator(last)) {
+        // Start a new number.
+        if (d === '.') {
+          state.tokens.push('0.');
+        } else {
+          state.tokens.push(d);
+        }
+      } else {
+        // Extend the current number, but only allow one decimal point per
+        // number.
+        if (d === '.' && last.includes('.')) return;
+        state.tokens[state.tokens.length - 1] = last + d;
+      }
+      // Pressing a digit invalidates the previous result; revert badge to
+      // "local" so the user sees that new keypresses are pure UI updates.
+      clearResult('local');
+      render();
+    }
+
+    function pressOp(op) {
+      if (state.tokens.length === 0) return;
+      const last = state.tokens[state.tokens.length - 1];
+      if (isOperator(last)) {
+        // Replace pending operator instead of stacking.
+        state.tokens[state.tokens.length - 1] = op;
+      } else {
+        state.tokens.push(op);
+      }
+      clearResult('local');
+      render();
+    }
+
+    function pressClear() {
+      state.tokens = [];
+      clearResult('local');
+      hideHint();
+      render();
+    }
+
+    function pressBack() {
+      const last = state.tokens[state.tokens.length - 1];
+      if (last === undefined) return;
+      if (isOperator(last) || last.length <= 1) {
+        state.tokens.pop();
+      } else {
+        state.tokens[state.tokens.length - 1] = last.slice(0, -1);
+      }
+      clearResult('local');
+      render();
+    }
+
+    // ---------------------------------------------------------------------
+    // PATH 3 — MCP server computation. The widget *itself* is the caller.
+    //
+    // V1 only handles the simple `number OP number` shape — that's the
+    // smallest meaningful demonstration of "the widget called a primitive
+    // tool." Anything more complex (precedence, multiple operators, a
+    // unary +/- in the middle) is the LLM's job (V2), so we surface a hint
+    // that points the user to the chat.
+    // ---------------------------------------------------------------------
+    async function pressEquals() {
+      // The +/- key handles single-operand negate locally, so equals on a
+      // single number is a no-op.
+      if (state.tokens.length === 0) return;
+      if (state.tokens.length === 1) {
+        // Show the bare number as the result.
+        setResult(state.tokens[0], 'local');
+        return;
+      }
+
+      // V1 handles only "a OP b".
+      const matchesBinary =
+        state.tokens.length === 3 &&
+        !isOperator(state.tokens[0]) &&
+        isOperator(state.tokens[1]) &&
+        !isOperator(state.tokens[2]);
+
+      if (!matchesBinary) {
+        showHint(
+          'V1 only computes <code>a OP b</code> from the keypad. For ' +
+          '<code>' + tokensToExpression(state.tokens) + '</code>, ask the chat ' +
+          '(e.g. "compute ' + tokensToExpression(state.tokens) + '") — the LLM ' +
+          'will decompose it into primitive tool calls. (V2 demonstrates this.)'
+        );
+        return;
+      }
+
+      const a = parseFloat(state.tokens[0]);
+      const op = state.tokens[1];
+      const b = parseFloat(state.tokens[2]);
+      const tool = TOOL_FOR_OP[op];
+
+      if (Number.isNaN(a) || Number.isNaN(b) || !tool) {
+        setError('Invalid expression.');
+        return;
+      }
+
+      try {
+        const out = await callTool(tool, { a, b });
+        applyToolResult(out, /*fromLLM=*/false);
+      } catch (e) {
+        setError(e && e.message ? e.message : String(e));
+      }
+    }
+
+    // The +/- key uses the negate primitive when the current number is
+    // complete. If the user hasn't typed anything yet, do nothing.
+    async function pressNegate() {
+      const last = state.tokens[state.tokens.length - 1];
+      if (last === undefined || isOperator(last)) return;
+      const x = parseFloat(last);
+      if (Number.isNaN(x)) return;
+      try {
+        const out = await callTool('negate', { x });
+        if (out && out.ok === 'true') {
+          // Replace the last number with the negated value so further
+          // arithmetic uses the new sign.
+          state.tokens[state.tokens.length - 1] = String(out.result);
+          render();
+        }
+        applyToolResult(out, /*fromLLM=*/false);
+      } catch (e) {
+        setError(e && e.message ? e.message : String(e));
+      }
+    }
+
+    // ---------------------------------------------------------------------
+    // PATH 2 — LLM-driven path.
+    //
+    // When the user types math in the chat, the host LLM calls a primitive
+    // tool. The MCP Apps host pushes the structuredContent to this widget
+    // via `ui/notifications/tool-result`, regardless of whether the widget
+    // initiated the call. We update the display and tag it as "llm".
+    //
+    // Note on SDK limitations (V1): the MCP Apps bridge in the reference
+    // PMCP example exposes `mcpBridge.callTool`, `getState`, `setState`. It
+    // does NOT expose a "send-this-to-the-LLM" message API. So the widget
+    // cannot proactively *route* the user's keypad presses to the chat. The
+    // closest supported mechanism is what we already do: when the user
+    // types in the chat, the LLM's reasoning path fires, and the widget
+    // listens for the resulting tool-result notifications.
+    // ---------------------------------------------------------------------
+    window.addEventListener('message', function (event) {
+      if (event.source !== window.parent) return;
+      const msg = event.data;
+      if (!msg || msg.jsonrpc !== '2.0') return;
+      if (msg.method !== 'ui/notifications/tool-result') return;
+      const data = msg.params && msg.params.structuredContent;
+      if (!data) return;
+      applyToolResult(data, /*fromLLM=*/true);
+    });
+
+    // ---------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------
+    function isOperator(tok) {
+      return tok === '+' || tok === '-' || tok === '*' || tok === '/';
+    }
+
+    function tokensToExpression(tokens) {
+      return tokens.map(t => isOperator(t) ? ' ' + SYMBOL_FOR_OP[t] + ' ' : t).join('');
+    }
+
+    function render() {
+      if (state.tokens.length === 0) {
+        exprEl.innerHTML = '<span class="placeholder">tap keys&hellip;</span>';
+      } else {
+        exprEl.textContent = tokensToExpression(state.tokens);
+      }
+    }
+
+    function clearResult(badge) {
+      state.lastResult = null;
+      state.lastBadge = badge || 'local';
+      resultEl.textContent = '—';
+      resultEl.className = 'result muted';
+      badgeEl.textContent = badge || 'local';
+      badgeEl.className = 'badge ' + (badge || 'local');
+      hideHint();
+    }
+
+    function setResult(text, badge) {
+      state.lastResult = text;
+      state.lastBadge = badge;
+      resultEl.textContent = text;
+      resultEl.className = 'result' + (badge === 'error' ? ' error' : '');
+      badgeEl.textContent =
+        badge === 'llm' ? 'llm' : badge === 'server' ? 'server' : badge;
+      badgeEl.className = 'badge ' + badge;
+      saveState();
+    }
+
+    function setError(msg) {
+      setResult(msg, 'error');
+    }
+
+    /**
+     * Render a structured CalcOutput on the display.
+     *
+     * The output shape is:
+     *   { ok: "true", op, inputs: [...], result, display }
+     * or:
+     *   { ok: "false", op, inputs: [...], code, message }
+     */
+    function applyToolResult(out, fromLLM) {
+      if (!out) return;
+      const badge = fromLLM ? 'llm' : 'server';
+
+      // Discriminator is "true"/"false" string because of the Rust enum
+      // tagging. Be defensive about the shape coming from any host.
+      const ok = out.ok === true || out.ok === 'true' || out.success === true;
+      const isErr = out.ok === false || out.ok === 'false' || out.code;
+
+      if (ok) {
+        const display = out.display !== undefined ? String(out.display)
+                       : out.result !== undefined ? String(out.result)
+                       : '';
+        const opText = out.op
+          ? out.op + '(' + (out.inputs || []).join(', ') + ')'
+          : '';
+        // When the LLM drove the call, we didn't have local tokens; show
+        // what the server actually computed in the expression line so the
+        // user can see "the chat asked for add(1, 1)".
+        if (fromLLM && opText) {
+          exprEl.textContent = opText;
+        }
+        setResult(display, badge);
+        return;
+      }
+
+      if (isErr) {
+        const code = out.code || 'error';
+        const message = out.message || code;
+        setResult(message, 'error');
+        return;
+      }
+
+      // Unknown shape — render best-effort.
+      try {
+        setResult(JSON.stringify(out), badge);
+      } catch (_) {
+        setResult('(unrecognized result)', 'error');
+      }
+    }
+
+    function showHint(html) {
+      hintEl.innerHTML = html;
+      hintEl.classList.add('visible');
+    }
+    function hideHint() {
+      hintEl.classList.remove('visible');
+    }
+
+    // ---------------------------------------------------------------------
+    // MCP bridge
+    // ---------------------------------------------------------------------
+    async function callTool(name, args) {
+      if (window.mcpBridge && typeof window.mcpBridge.callTool === 'function') {
+        return await window.mcpBridge.callTool(name, args);
+      }
+      throw new Error('MCP bridge not available');
+    }
+
+    function saveState() {
+      try {
+        if (window.mcpBridge && typeof window.mcpBridge.setState === 'function') {
+          window.mcpBridge.setState({
+            tokens: state.tokens,
+            lastResult: state.lastResult,
+            lastBadge: state.lastBadge,
+          });
+        }
+      } catch (_) { /* best-effort */ }
+    }
+
+    function loadState() {
+      try {
+        if (window.mcpBridge && typeof window.mcpBridge.getState === 'function') {
+          const s = window.mcpBridge.getState();
+          if (s && Array.isArray(s.tokens)) {
+            state.tokens = s.tokens.slice();
+            if (s.lastResult) {
+              setResult(s.lastResult, s.lastBadge || 'local');
+            }
+          }
+        }
+      } catch (_) { /* best-effort */ }
+    }
+
+    // ---------------------------------------------------------------------
+    // Wire up the keypad
+    // ---------------------------------------------------------------------
+    function init() {
+      document.querySelectorAll('button.key').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (btn.dataset.digit !== undefined) {
+            pressDigit(btn.dataset.digit);
+          } else if (btn.dataset.op !== undefined) {
+            pressOp(btn.dataset.op);
+          } else {
+            const action = btn.dataset.action;
+            if (action === 'clear') pressClear();
+            else if (action === 'back') pressBack();
+            else if (action === 'equals') pressEquals();
+            else if (action === 'negate') pressNegate();
+          }
+        });
+      });
+
+      // Theme handling, mirroring the chess example.
+      const theme = (window.mcpBridge && window.mcpBridge.theme) || 'dark';
+      document.body.classList.add('theme-' + theme);
+      if (theme === 'light') {
+        document.body.style.background = '#f5f5f5';
+        document.body.style.color = '#222';
+      }
+
+      loadState();
+      render();
+
+      setTimeout(() => {
+        if (window.mcpBridge && window.mcpBridge.notifyIntrinsicHeight) {
+          window.mcpBridge.notifyIntrinsicHeight(document.body.scrollHeight);
+        }
+      }, 80);
+
+      window.addEventListener('widgetStateUpdate', e => {
+        const s = e && e.detail;
+        if (s && Array.isArray(s.tokens)) {
+          state.tokens = s.tokens.slice();
+          render();
+        }
+      });
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
+  </script>
+</body>
+</html>

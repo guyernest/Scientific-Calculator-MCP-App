@@ -1,0 +1,30 @@
+[workspace]
+members = ["scientific-calculator-mcp-app-lambda"]
+resolver = "2"
+
+[package]
+name = "scientific-calculator-mcp-app"
+version = "0.1.0"
+edition = "2021"
+description = "Educational MCP Scientific Calculator: V1 primitive arithmetic tools + interactive keypad widget"
+publish = false
+
+[lib]
+name = "scientific_calculator_mcp_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "scientific-calculator-mcp-app"
+path = "src/main.rs"
+
+[dependencies]
+pmcp = { version = "2.6", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1.0"
+async-trait = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
