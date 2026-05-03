@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Calculator</title>
+  <title>Calculator — V2</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -133,11 +133,82 @@
       line-height: 1.4;
     }
     .legend strong { color: #aab3c8; font-weight: 600; }
+
+    /* V2: ordered list of LLM-decomposed tool calls. Each step shows
+       what the LLM asked the server to compute, in order, so the
+       teaching point ("the LLM did the precedence, the server did the
+       arithmetic") is visible. */
+    .steps {
+      margin-top: 14px;
+      background: #16213e;
+      border-radius: 10px;
+      padding: 12px;
+      display: none;
+    }
+    .steps.visible { display: block; }
+    .steps-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .steps-title {
+      font-size: 0.72rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #c4b5fd;
+      font-weight: 600;
+    }
+    .steps-clear {
+      background: transparent;
+      color: #6f7a90;
+      border: 1px solid #2a3558;
+      padding: 3px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.7rem;
+      font-family: inherit;
+    }
+    .steps-clear:hover { color: #c4b5fd; border-color: #4d3d8a; }
+    .steps-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .step {
+      display: grid;
+      grid-template-columns: 22px 1fr auto;
+      gap: 8px;
+      align-items: baseline;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.82rem;
+      padding: 6px 8px;
+      background: #0f3460;
+      border-radius: 6px;
+    }
+    .step .idx {
+      color: #c4b5fd;
+      font-weight: 600;
+    }
+    .step .call { color: #e6e8ef; word-break: break-word; }
+    .step .arrow { color: #6f7a90; padding: 0 4px; }
+    .step .val { color: #6ee7b7; font-weight: 600; }
+    .step.err .val { color: #ff9b9b; }
+    .step.err .call { color: #ffd0d0; }
+    .step .err-code {
+      font-size: 0.7rem;
+      color: #ff9b9b;
+      grid-column: 2 / 4;
+      margin-top: 2px;
+    }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>MCP Calculator — V1</h1>
+    <h1>MCP Calculator — V2</h1>
 
     <div class="display" aria-live="polite">
       <div id="expr" class="expr"><span class="placeholder">tap keys&hellip;</span></div>
@@ -181,6 +252,18 @@
       <span style="color:#6ee7b7">Server</span> = widget called a primitive MCP tool.
       <span style="color:#c4b5fd">LLM</span> = the chat LLM decomposed the request and called tools.
     </div>
+
+    <!-- V2: visualizes the LLM-decomposed step list. Each entry is a
+         primitive tool call the chat LLM made while reasoning about an
+         expression like (3 + 5)^2 / log10(1000). The list grows in
+         real time as the host pushes ui/notifications/tool-result. -->
+    <div id="steps" class="steps" aria-live="polite">
+      <div class="steps-header">
+        <span class="steps-title">LLM decomposition</span>
+        <button id="steps-clear" class="steps-clear" type="button">clear</button>
+      </div>
+      <ol id="steps-list" class="steps-list"></ol>
+    </div>
   </div>
 
   <script>
@@ -195,6 +278,11 @@
       // The last result that was displayed, and where it came from.
       lastResult: null,    // string | null
       lastBadge: 'local',  // 'local' | 'server' | 'llm' | 'error'
+      // V2: ordered list of LLM-decomposed tool calls. Each entry is the
+      // structuredContent the host pushed via ui/notifications/tool-result.
+      // The widget visualizes this so the user can see "the LLM ordered
+      // these primitives, the server computed each one".
+      steps: [],
     };
 
     // ---------------------------------------------------------------------
@@ -204,6 +292,9 @@
     const resultEl = document.getElementById('result');
     const badgeEl = document.getElementById('badge');
     const hintEl = document.getElementById('hint');
+    const stepsEl = document.getElementById('steps');
+    const stepsListEl = document.getElementById('steps-list');
+    const stepsClearBtn = document.getElementById('steps-clear');
 
     // Map UI ops -> server tool name. V1 only has 4 binary primitives.
     const TOOL_FOR_OP = {
@@ -298,10 +389,11 @@
 
       if (!matchesBinary) {
         showHint(
-          'V1 only computes <code>a OP b</code> from the keypad. For ' +
+          'The keypad only computes <code>a OP b</code> directly. For ' +
           '<code>' + tokensToExpression(state.tokens) + '</code>, ask the chat ' +
           '(e.g. "compute ' + tokensToExpression(state.tokens) + '") — the LLM ' +
-          'will decompose it into primitive tool calls. (V2 demonstrates this.)'
+          'will decompose it into ordered primitive tool calls and the steps ' +
+          'will appear below.'
         );
         return;
       }
@@ -432,6 +524,14 @@
       const ok = out.ok === true || out.ok === 'true' || out.success === true;
       const isErr = out.ok === false || out.ok === 'false' || out.code;
 
+      // V2: any LLM-driven tool call (success or error) is appended to
+      // the visible step list. Server-path calls (the widget's own
+      // mcpBridge.callTool) are NOT recorded — those came from a single
+      // user click, not from the LLM's reasoning.
+      if (fromLLM) {
+        appendStep(out);
+      }
+
       if (ok) {
         const display = out.display !== undefined ? String(out.display)
                        : out.result !== undefined ? String(out.result)
@@ -464,6 +564,86 @@
       }
     }
 
+    // V2: step-list rendering for the LLM decomposition path.
+    function appendStep(out) {
+      state.steps.push(out);
+      renderSteps();
+      saveState();
+      notifyHeight();
+    }
+
+    function clearSteps() {
+      state.steps = [];
+      renderSteps();
+      saveState();
+      notifyHeight();
+    }
+
+    function renderSteps() {
+      if (!state.steps.length) {
+        stepsEl.classList.remove('visible');
+        stepsListEl.innerHTML = '';
+        return;
+      }
+      stepsEl.classList.add('visible');
+      const html = state.steps.map((s, i) => stepHtml(s, i + 1)).join('');
+      stepsListEl.innerHTML = html;
+    }
+
+    function stepHtml(out, idx) {
+      const ok = out && (out.ok === true || out.ok === 'true');
+      const op = (out && out.op) || 'unknown';
+      const inputs = (out && out.inputs) || [];
+      const call = escapeHtml(op + '(' + inputs.map(formatNum).join(', ') + ')');
+      if (ok) {
+        const value = out.display !== undefined ? String(out.display)
+                     : out.result !== undefined ? String(out.result)
+                     : '';
+        return (
+          '<li class="step">'
+          + '<span class="idx">' + idx + '.</span>'
+          + '<span class="call">' + call + '</span>'
+          + '<span><span class="arrow">→</span><span class="val">' + escapeHtml(value) + '</span></span>'
+          + '</li>'
+        );
+      }
+      const code = (out && out.code) || 'error';
+      const msg = (out && out.message) || code;
+      return (
+        '<li class="step err">'
+        + '<span class="idx">' + idx + '.</span>'
+        + '<span class="call">' + call + '</span>'
+        + '<span><span class="arrow">→</span><span class="val">error</span></span>'
+        + '<span class="err-code">' + escapeHtml(code) + ': ' + escapeHtml(msg) + '</span>'
+        + '</li>'
+      );
+    }
+
+    function formatNum(n) {
+      if (typeof n !== 'number') return String(n);
+      if (!Number.isFinite(n)) return String(n);
+      // Mirror the Rust format_number behavior closely enough for display.
+      if (Number.isInteger(n)) return String(n);
+      return String(Number(n.toFixed(10)));
+    }
+
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function notifyHeight() {
+      try {
+        if (window.mcpBridge && typeof window.mcpBridge.notifyIntrinsicHeight === 'function') {
+          window.mcpBridge.notifyIntrinsicHeight(document.body.scrollHeight);
+        }
+      } catch (_) { /* best-effort */ }
+    }
+
     function showHint(html) {
       hintEl.innerHTML = html;
       hintEl.classList.add('visible');
@@ -489,6 +669,7 @@
             tokens: state.tokens,
             lastResult: state.lastResult,
             lastBadge: state.lastBadge,
+            steps: state.steps,
           });
         }
       } catch (_) { /* best-effort */ }
@@ -503,6 +684,10 @@
             if (s.lastResult) {
               setResult(s.lastResult, s.lastBadge || 'local');
             }
+          }
+          if (s && Array.isArray(s.steps)) {
+            state.steps = s.steps.slice();
+            renderSteps();
           }
         }
       } catch (_) { /* best-effort */ }
@@ -527,6 +712,8 @@
           }
         });
       });
+
+      stepsClearBtn.addEventListener('click', clearSteps);
 
       // Theme handling, mirroring the chess example.
       const theme = (window.mcpBridge && window.mcpBridge.theme) || 'dark';

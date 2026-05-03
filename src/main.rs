@@ -1,22 +1,26 @@
-//! Scientific Calculator MCP App — V1 (local HTTP binary)
+//! Scientific Calculator MCP App — V2 (local HTTP binary)
 //!
-//! Educational MCP server that exposes primitive arithmetic tools and serves
-//! an interactive calculator-keypad widget. The point of V1 is to make the
-//! three paths of an MCP App widget visible:
+//! Educational MCP server that exposes primitive arithmetic + scientific
+//! tools and serves an interactive calculator-keypad widget. The point is
+//! to make the three paths of an MCP App widget visible:
 //!
 //! 1. **Local widget UI updates** — clicking digits and operators updates the
 //!    calculator's expression/display immediately, without leaving the widget.
 //! 2. **LLM reasoning path** — when the user types math in the chat, the host
 //!    LLM decomposes the expression into primitive tool calls. The host then
 //!    pushes the structuredContent of each tool result back to the widget via
-//!    `ui/notifications/tool-result`.
+//!    `ui/notifications/tool-result`. V2 adds a step-list view in the widget
+//!    that visualizes the ordered decomposition.
 //! 3. **MCP server computation path** — when the user clicks `=` in the
 //!    widget, the widget itself invokes a primitive tool via
 //!    `mcpBridge.callTool(...)`. Server is the only place authoritative
 //!    arithmetic happens.
 //!
-//! V1 deliberately avoids server-side expression parsing, calculator history,
-//! scientific functions, plotting, and code mode (those are V2+).
+//! V1 deliberately avoided scientific functions; V2 adds `power`, `sqrt`,
+//! `log` so the LLM can decompose expressions like `(3 + 5)^2 / log10(1000)`
+//! into primitive tool calls. There is still no server-side expression
+//! parser, no calculator history (the chat transcript + step list are the
+//! history), no plotting, and no code mode (those are V3+).
 //!
 //! All server building lives in `lib.rs` so the Lambda wrapper crate
 //! (`scientific-calculator-mcp-app-lambda`) can reuse it.
@@ -54,14 +58,19 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
-    println!("Scientific Calculator MCP Server (V1) running at http://{}", bound_addr);
+    println!("Scientific Calculator MCP Server (V2) running at http://{}", bound_addr);
     println!();
-    println!("Tools:");
-    println!("  - add(a, b)        Add two numbers.");
-    println!("  - subtract(a, b)   Subtract b from a.");
-    println!("  - multiply(a, b)   Multiply two numbers.");
-    println!("  - divide(a, b)     Divide a by b. Structured divide-by-zero error.");
-    println!("  - negate(x)        Unary negation.");
+    println!("Tools (V1 — arithmetic):");
+    println!("  - add(a, b)              Add two numbers.");
+    println!("  - subtract(a, b)         Subtract b from a.");
+    println!("  - multiply(a, b)         Multiply two numbers.");
+    println!("  - divide(a, b)           Divide a by b. Structured divide-by-zero error.");
+    println!("  - negate(x)              Unary negation.");
+    println!();
+    println!("Tools (V2 — scientific):");
+    println!("  - power(base, exponent)  base^exponent. domain_error for non-finite results.");
+    println!("  - sqrt(x)                Square root. domain_error for x < 0.");
+    println!("  - log(x, base)           log base of x. domain_error for x <= 0, base <= 0, base == 1.");
     println!();
     println!("Widget resource: ui://app/keypad");
     println!();

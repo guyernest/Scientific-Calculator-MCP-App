@@ -37,7 +37,38 @@ acting as a small interactive calculator.
 | **LLM reasoning** | Typing math in the chat (e.g. _"compute 1 + 1"_) | The host LLM decomposes the request, calls primitive tools, and the host pushes each `structuredContent` to the widget via `ui/notifications/tool-result`. The badge shows `llm`. |
 
 V1 is intentionally minimal — it shows the three paths with five primitive
-tools and one widget. V2+ adds the rest of the spec.
+tools and one widget.
+
+## V2: LLM decomposition & operator precedence
+
+V2 (this branch) demonstrates how an MCP App handles non-trivial
+expressions like `(3 + 5)^2 / log10(1000)`. The host LLM decomposes the
+expression into **ordered primitive tool calls**; the server stays a flat
+collection of primitives (no `evaluate_expression` parser). The widget
+gains a **step list** that visualizes the LLM's decomposition in real
+time, so the teaching point — *the LLM owns precedence, the server owns
+arithmetic* — is visible.
+
+Three scientific primitives are added to give the LLM enough vocabulary:
+
+- `power(base, exponent)`
+- `sqrt(x)` — `domain_error` for `x < 0`
+- `log(x, base)` — explicit base; `domain_error` for `x <= 0`, `base <= 0`, `base == 1`
+
+The canonical demo: typing _"compute (3 + 5)^2 / log10(1000)"_ in chat
+makes the LLM emit, in order:
+
+1. `add(3, 5)` → `8`
+2. `power(8, 2)` → `64`
+3. `log(1000, 10)` → `3`
+4. `divide(64, 3)` → `21.333…`
+
+Each call's `structuredContent` is pushed to the widget via
+`ui/notifications/tool-result` and appended to the step list.
+
+See [`examples/v2-llm-decomposition.md`](examples/v2-llm-decomposition.md)
+for the full walk-through. `preview.html` includes a **Run decomposition**
+button that simulates the host pushing this exact sequence.
 
 ### V1 server tools
 
@@ -59,7 +90,7 @@ the LLM can reason about them without parsing free-form strings.
 
 - No `evaluate_expression` parser on the server.
 - No calculator history (the chat transcript is the history).
-- No scientific functions, plotting, or code mode (V2+).
+- No plotting or code mode (V3+). Scientific primitives arrive in V2 — V1 has only the five arithmetic tools above.
 - No widget → LLM "send this prompt" routing — the MCP Apps SDK exposes
   `mcpBridge.callTool` / `getState` / `setState` and pushes
   `ui/notifications/tool-result`, but does not expose a "compose a chat
@@ -107,8 +138,10 @@ host.
 cargo test
 ```
 
-Tests cover all five primitives, divide-by-zero, NaN/Infinity handling, and
-the structured-output JSON shape.
+Tests cover all primitives (V1 arithmetic + V2 scientific), divide-by-zero,
+domain errors (`sqrt(-1)`, `log(0, 10)`, `power(-1, 0.5)`, …),
+NaN/Infinity handling, the structured-output JSON shape, and a
+decomposition walk-through for `(3 + 5)^2 / log10(1000)`.
 
 ## SDK limitations
 
@@ -127,11 +160,14 @@ SDK. So when the user clicks `=` on an expression V1 can't evaluate (e.g.
 supported thing: it shows a hint pointing the user to ask the chat. When
 the user does, the LLM-driven path lights up automatically.
 
-V2 is where we'll demonstrate that handoff in earnest, by using a tool the
-LLM can call with the widget's clicked-token sequence as input. That's
-already supported today (the host calls the tool, the host pushes the
-result back to the widget) — V2 just needs the tool and a widget UI that
-exposes "ask the LLM to evaluate this".
+V2 sidesteps this by leaning into the supported direction: the user types
+the expression in the chat, the LLM decomposes it into ordered primitive
+tool calls, and the host pushes each `structuredContent` back to the
+widget. The widget renders the ordered list in its **LLM decomposition**
+panel, so the educational point ("the LLM owns precedence, the server
+owns arithmetic") is visible without inventing a new bridge API. A
+proper widget → LLM "send this prompt" handoff still depends on the SDK
+exposing such a surface, and is left for a future iteration.
 
 ## File map
 
@@ -139,11 +175,14 @@ exposes "ask the LLM to evaluate this".
 .
 ├── Cargo.toml
 ├── src/
-│   └── main.rs           # PMCP server: 5 primitive tools + ResourceHandler
+│   ├── lib.rs            # PMCP server: primitive tools (V1) + scientific (V2)
+│   └── main.rs           # Local HTTP binary
+├── scientific-calculator-mcp-app-lambda/   # AWS Lambda wrapper
 ├── widgets/
-│   └── keypad.html       # Interactive keypad widget
-├── preview.html          # Mock-bridge harness for in-browser dev
+│   └── keypad.html       # Interactive keypad widget + V2 step-list view
+├── preview.html          # Mock-bridge harness with V2 decomposition demo
 ├── examples/
-│   └── v1-basic-arithmetic.md
+│   ├── v1-basic-arithmetic.md
+│   └── v2-llm-decomposition.md
 └── README.md
 ```
