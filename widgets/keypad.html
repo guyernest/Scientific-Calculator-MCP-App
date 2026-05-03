@@ -951,9 +951,58 @@
     // ---------------------------------------------------------------------
     async function callTool(name, args) {
       const out = await app.callServerTool({ name, arguments: args });
-      // app.callServerTool returns the full CallToolResult; existing
-      // applyToolResult expects the structuredContent payload.
-      return (out && out.structuredContent) ?? out;
+      // app.callServerTool may return the full CallToolResult, a bare
+      // CalcOutput, or a CallToolResult whose payload is JSON-stringified
+      // inside content[0].text. normalizeToolResult collapses all of
+      // these into the structured CalcOutput applyToolResult expects.
+      return normalizeToolResult(out);
+    }
+
+    /**
+     * Coerce any of the result shapes a host might hand us into the bare
+     * CalcOutput payload `applyToolResult` renders. Accepted shapes:
+     *
+     *   1. CalcOutput directly: { ok: "true", op, inputs, result, display }
+     *   2. CallToolResult.structuredContent → CalcOutput
+     *   3. CallToolResult.content[0].text containing JSON-stringified
+     *      CalcOutput (the spec text channel)
+     *   4. CallToolResult.content[0].text containing a JSON object that
+     *      itself has structuredContent / content (double-wrapped — seen
+     *      when a host forwards the wire envelope as text)
+     *
+     * Returns the original value unchanged when no extraction succeeds,
+     * letting applyToolResult fall through to its "unknown shape" branch.
+     */
+    function normalizeToolResult(out) {
+      if (!out || typeof out !== 'object') return out;
+
+      // (1) Already a CalcOutput.
+      if (out.ok === true || out.ok === 'true' || out.ok === false || out.ok === 'false') {
+        return out;
+      }
+
+      // (2) CallToolResult with structuredContent.
+      if (out.structuredContent && typeof out.structuredContent === 'object') {
+        return normalizeToolResult(out.structuredContent);
+      }
+
+      // (3) and (4) — text-channel payload. Pull the first text block and
+      // try to parse it as JSON. If it parses to another result envelope,
+      // recurse; if it parses to a CalcOutput, return it.
+      const content = Array.isArray(out.content) ? out.content : null;
+      if (content && content.length) {
+        const block = content.find(b => b && b.type === 'text' && typeof b.text === 'string');
+        if (block) {
+          try {
+            const parsed = JSON.parse(block.text);
+            return normalizeToolResult(parsed);
+          } catch (_) {
+            // Not JSON — fall through.
+          }
+        }
+      }
+
+      return out;
     }
 
     // ---------------------------------------------------------------------
@@ -990,11 +1039,14 @@
 
     app.ontoolresult = (result) => {
       // Replaces the legacy `window.addEventListener('message', ...)`
-      // listener filtered on `ui/notifications/tool-result`. The SDK
-      // hands us the full CallToolResult; the keypad UI only needs the
-      // structuredContent payload.
-      if (result && result.structuredContent) {
-        applyToolResult(result.structuredContent, /*fromLLM=*/true);
+      // listener filtered on `ui/notifications/tool-result`. Some hosts
+      // hand us the full CallToolResult with structuredContent; others
+      // forward only the text channel (content[0].text containing
+      // JSON-stringified CalcOutput). normalizeToolResult collapses
+      // every accepted shape into the bare CalcOutput payload.
+      const payload = normalizeToolResult(result);
+      if (payload) {
+        applyToolResult(payload, /*fromLLM=*/true);
       }
     };
 

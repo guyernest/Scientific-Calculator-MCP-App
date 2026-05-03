@@ -94,6 +94,23 @@
       they would from a real MCP Apps host.
     </p>
 
+    <h2>Host envelope shape</h2>
+    <p class="note">
+      Some MCP hosts return <code>structuredContent</code> on
+      <code>tools/call</code>, others return only the text channel
+      (<code>content[0].text</code> with JSON-stringified output) and
+      omit <code>structuredContent</code>. The widget normalizes both.
+      Toggle this to verify the keypad still shows
+      <code>63</code> for <code>7 × 9</code> when the host strips
+      <code>structuredContent</code>.
+    </p>
+    <div class="row">
+      <label style="display:flex; align-items:center; gap:8px; font-size:0.85rem;">
+        <input id="toggle-text-only" type="checkbox" />
+        Drop <code>structuredContent</code> (text-channel only)
+      </label>
+    </div>
+
     <h2>Simulate the LLM reasoning path</h2>
     <p class="note">
       In a real MCP host (Claude Desktop, ChatGPT Apps), typing a math
@@ -308,16 +325,15 @@
         const out = compute(name, args);
         logEntry('server', name, args, out);
         // The MCP CallToolResult shape: structuredContent + content +
-        // isError. The widget reads structuredContent.
-        postToWidget({
-          jsonrpc: '2.0',
-          id: msg.id,
-          result: {
-            structuredContent: out,
-            content: [{ type: 'text', text: JSON.stringify(out) }],
-            isError: out && (out.ok === 'false' || !!out.code),
-          },
-        });
+        // isError. The widget normalizes both — when the toggle is on
+        // we omit structuredContent to exercise the text-channel path.
+        const dropStructured = isTextOnly();
+        const result = {
+          content: [{ type: 'text', text: JSON.stringify(out) }],
+          isError: out && (out.ok === 'false' || !!out.code),
+        };
+        if (!dropStructured) result.structuredContent = out;
+        postToWidget({ jsonrpc: '2.0', id: msg.id, result });
         return;
       }
 
@@ -339,16 +355,23 @@
     function pushLLM(name, args) {
       const out = compute(name, args);
       logEntry('llm', name, args, out);
+      const dropStructured = isTextOnly();
+      const params = {
+        content: [{ type: 'text', text: JSON.stringify(out) }],
+        isError: out && (out.ok === 'false' || !!out.code),
+      };
+      if (!dropStructured) params.structuredContent = out;
       postToWidget({
         jsonrpc: '2.0',
         method: 'ui/notifications/tool-result',
-        params: {
-          structuredContent: out,
-          content: [{ type: 'text', text: JSON.stringify(out) }],
-          isError: out && (out.ok === 'false' || !!out.code),
-        },
+        params,
       });
       return out;
+    }
+
+    function isTextOnly() {
+      const cb = document.getElementById('toggle-text-only');
+      return !!(cb && cb.checked);
     }
 
     function pushInterpretation(env) {
