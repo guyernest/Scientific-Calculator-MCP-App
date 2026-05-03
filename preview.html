@@ -19,7 +19,7 @@
       border: 1px solid #243763;
       border-radius: 12px;
       width: 100%;
-      height: 720px;
+      height: 780px;
       background: #1a1a2e;
     }
     .panel {
@@ -98,6 +98,36 @@
       <button data-tool="negate" data-args='{"x":5}'>negate(5)</button>
     </div>
 
+    <h2>V2 — scientific primitives</h2>
+    <p class="note">
+      The widget itself now exposes <code>√x</code>, <code>x²</code>,
+      <code>x<sup>y</sup></code>, <code>log₁₀</code>, and <code>ln</code>
+      keys that route directly to these primitives via
+      <code>mcpBridge.callTool</code> (badge: <span style="color:#6ee7b7">server</span>).
+      The buttons below simulate the alternative path — the host LLM pushing
+      the same tool results in via <code>ui/notifications/tool-result</code>
+      (badge: <span style="color:#c4b5fd">llm</span>).
+    </p>
+    <div class="row">
+      <button data-tool="power" data-args='{"base":2,"exponent":10}'>power(2, 10)</button>
+      <button data-tool="sqrt" data-args='{"x":64}'>sqrt(64)</button>
+      <button data-tool="sqrt" data-args='{"x":-1}'>sqrt(-1) — domain error</button>
+      <button data-tool="log" data-args='{"x":1000,"base":10}'>log(1000, 10)</button>
+      <button data-tool="log" data-args='{"x":0,"base":10}'>log(0, 10) — domain error</button>
+    </div>
+
+    <h2>V2 — LLM decomposition demo</h2>
+    <p class="note">
+      Simulates the host LLM decomposing
+      <code>(3 + 5)<sup>2</sup> / log<sub>10</sub>(1000)</code> into ordered
+      primitive tool calls. Each call is pushed to the widget as the LLM
+      would, and the widget's step list grows in order:
+    </p>
+    <div class="row">
+      <button id="run-decomposition">Run decomposition</button>
+      <button id="clear-steps-host">Reset (clear widget steps)</button>
+    </div>
+
     <h2>Tool-call log</h2>
     <div id="log" class="log">(no calls yet)</div>
   </div>
@@ -153,6 +183,32 @@
           return { ok: 'false', op: 'negate', inputs: [args.x], code: 'invalid_input', message: 'negate requires a finite numeric input.' };
         return { ok: 'true', op: 'negate', inputs: [args.x], result: -args.x, display: String(-args.x) };
       }
+      // V2 primitives — mirror the Rust implementations.
+      if (name === 'power') {
+        if (!finite(args.base, args.exponent))
+          return { ok: 'false', op: 'power', inputs: [args.base, args.exponent], code: 'invalid_input', message: 'power requires finite numeric inputs.' };
+        const r = Math.pow(args.base, args.exponent);
+        if (!Number.isFinite(r))
+          return { ok: 'false', op: 'power', inputs: [args.base, args.exponent], code: 'domain_error', message: 'power produced a non-finite result (overflow or undefined).' };
+        return { ok: 'true', op: 'power', inputs: [args.base, args.exponent], result: r, display: String(r) };
+      }
+      if (name === 'sqrt') {
+        if (!finite(args.x))
+          return { ok: 'false', op: 'sqrt', inputs: [args.x], code: 'invalid_input', message: 'sqrt requires a finite numeric input.' };
+        if (args.x < 0)
+          return { ok: 'false', op: 'sqrt', inputs: [args.x], code: 'domain_error', message: 'sqrt is undefined for negative numbers in the reals.' };
+        return { ok: 'true', op: 'sqrt', inputs: [args.x], result: Math.sqrt(args.x), display: String(Math.sqrt(args.x)) };
+      }
+      if (name === 'log') {
+        if (!finite(args.x, args.base))
+          return { ok: 'false', op: 'log', inputs: [args.x, args.base], code: 'invalid_input', message: 'log requires finite numeric inputs.' };
+        if (args.x <= 0)
+          return { ok: 'false', op: 'log', inputs: [args.x, args.base], code: 'domain_error', message: 'log argument must be positive.' };
+        if (args.base <= 0 || args.base === 1)
+          return { ok: 'false', op: 'log', inputs: [args.x, args.base], code: 'domain_error', message: 'log base must be positive and not equal to 1.' };
+        const r = Math.log(args.x) / Math.log(args.base);
+        return { ok: 'true', op: 'log', inputs: [args.x, args.base], result: r, display: String(r) };
+      }
       return { ok: 'false', op: name, inputs: [], code: 'unknown_tool', message: 'Unknown tool: ' + name };
     }
 
@@ -178,18 +234,51 @@
 
       // Wire up the simulated LLM-path buttons. We post a message that
       // looks like the host's `ui/notifications/tool-result` notification.
+      function pushLLM(name, args) {
+        const out = compute(name, args);
+        logEntry('llm', name, args, out);
+        w.postMessage({
+          jsonrpc: '2.0',
+          method: 'ui/notifications/tool-result',
+          params: { structuredContent: out },
+        }, '*');
+        return out;
+      }
+
       document.querySelectorAll('button[data-tool]').forEach(btn => {
         btn.addEventListener('click', () => {
           const name = btn.dataset.tool;
           const args = JSON.parse(btn.dataset.args);
-          const out = compute(name, args);
-          logEntry('llm', name, args, out);
-          w.postMessage({
-            jsonrpc: '2.0',
-            method: 'ui/notifications/tool-result',
-            params: { structuredContent: out },
-          }, '*');
+          pushLLM(name, args);
         });
+      });
+
+      // V2 — drive the canonical decomposition for (3 + 5)^2 / log10(1000):
+      //   1. add(3, 5)        = 8
+      //   2. power(8, 2)      = 64
+      //   3. log(1000, 10)    = 3
+      //   4. divide(64, 3)    = 21.333...
+      // Each call is delayed slightly so the UI animates as if the host
+      // were pushing them in real time.
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      document.getElementById('run-decomposition').addEventListener('click', async () => {
+        const step1 = pushLLM('add', { a: 3, b: 5 });
+        await sleep(450);
+        const step2 = pushLLM('power', { base: step1.result, exponent: 2 });
+        await sleep(450);
+        const step3 = pushLLM('log', { x: 1000, base: 10 });
+        await sleep(450);
+        pushLLM('divide', { a: step2.result, b: step3.result });
+      });
+
+      // Reset clears the widget's step list by reaching into the iframe and
+      // dispatching a click on its #steps-clear button. This intentionally
+      // uses the widget's own clear flow rather than poking at state.
+      document.getElementById('clear-steps-host').addEventListener('click', () => {
+        try {
+          const btn = w.document.getElementById('steps-clear');
+          if (btn) btn.click();
+        } catch (_) { /* preview-only convenience */ }
       });
     });
   </script>

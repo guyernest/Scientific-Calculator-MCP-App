@@ -6,7 +6,7 @@ resolver = "2"
 name = "scientific-calculator-mcp-app"
 version = "0.1.0"
 edition = "2021"
-description = "Educational MCP Scientific Calculator: V1 primitive arithmetic tools + interactive keypad widget"
+description = "Educational MCP Scientific Calculator: arithmetic + scientific primitives, keypad widget, LLM decomposition step list"
 publish = false
 
 [lib]

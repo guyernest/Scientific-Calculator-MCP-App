@@ -1,11 +1,21 @@
-//! Scientific Calculator MCP App — V1 (library)
+//! Scientific Calculator MCP App — library (V1 + V2 tools)
 //!
 //! Library exposing `build_server()` so both the local HTTP binary
 //! (`src/main.rs`) and the AWS Lambda wrapper
 //! (`scientific-calculator-mcp-app-lambda/src/main.rs`) can construct the
 //! same MCP server.
 //!
-//! See `src/main.rs` for the V1 design narrative.
+//! V1: primitive arithmetic (`add`, `subtract`, `multiply`, `divide`,
+//! `negate`).
+//!
+//! V2: adds scientific primitives (`power`, `sqrt`, `log` with explicit
+//! base) so the host LLM can decompose expressions like
+//! `(3 + 5)^2 / log10(1000)` into ordered primitive tool calls. The
+//! server intentionally remains a flat collection of primitives — there is
+//! no `evaluate_expression` parser. Operator precedence is the LLM's job;
+//! the widget visualizes the ordered decomposition in a step list.
+//!
+//! See `src/main.rs` for the design narrative and `examples/` for usage.
 
 use pmcp::server::simple_resources::ResourceCollection;
 use pmcp::server::typed_tool::TypedToolWithOutput;
@@ -40,6 +50,22 @@ pub struct BinaryInput {
 pub struct UnaryInput {
     /// Operand.
     pub x: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PowerInput {
+    /// Base.
+    pub base: f64,
+    /// Exponent.
+    pub exponent: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct LogInput {
+    /// Argument (must be > 0).
+    pub x: f64,
+    /// Logarithm base (must be > 0 and != 1).
+    pub base: f64,
 }
 
 // =============================================================================
@@ -198,6 +224,78 @@ pub fn negate(x: f64) -> CalcOutput {
     CalcOutput::ok("negate", vec![x], -x)
 }
 
+// =============================================================================
+// V2 — Scientific primitives
+//
+// These exist so the host LLM can decompose expressions like
+// `(3 + 5)^2 / log10(1000)` into ordered primitive tool calls. The server is
+// still NOT an expression parser — precedence and ordering live in the LLM.
+// =============================================================================
+
+pub fn power(base: f64, exponent: f64) -> CalcOutput {
+    if !base.is_finite() || !exponent.is_finite() {
+        return CalcOutput::err(
+            "power",
+            vec![base, exponent],
+            "invalid_input",
+            "power requires finite numeric inputs.",
+        );
+    }
+    let r = base.powf(exponent);
+    if !r.is_finite() {
+        return CalcOutput::err(
+            "power",
+            vec![base, exponent],
+            "domain_error",
+            "power produced a non-finite result (overflow or undefined).",
+        );
+    }
+    CalcOutput::ok("power", vec![base, exponent], r)
+}
+
+pub fn sqrt(x: f64) -> CalcOutput {
+    if let Some(e) = validate_unary("sqrt", x) {
+        return e;
+    }
+    if x < 0.0 {
+        return CalcOutput::err(
+            "sqrt",
+            vec![x],
+            "domain_error",
+            "sqrt is undefined for negative numbers in the reals.",
+        );
+    }
+    CalcOutput::ok("sqrt", vec![x], x.sqrt())
+}
+
+pub fn log(x: f64, base: f64) -> CalcOutput {
+    if !x.is_finite() || !base.is_finite() {
+        return CalcOutput::err(
+            "log",
+            vec![x, base],
+            "invalid_input",
+            "log requires finite numeric inputs.",
+        );
+    }
+    if x <= 0.0 {
+        return CalcOutput::err(
+            "log",
+            vec![x, base],
+            "domain_error",
+            "log argument must be positive.",
+        );
+    }
+    if base <= 0.0 || base == 1.0 {
+        return CalcOutput::err(
+            "log",
+            vec![x, base],
+            "domain_error",
+            "log base must be positive and not equal to 1.",
+        );
+    }
+    CalcOutput::ok("log", vec![x, base], x.log(base))
+}
+
 macro_rules! binary_handler {
     ($name:ident, $f:ident) => {
         fn $name(
@@ -219,6 +317,27 @@ fn negate_handler(
     _extra: RequestHandlerExtra,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CalcOutput>> + Send>> {
     Box::pin(async move { Ok(negate(input.x)) })
+}
+
+fn power_handler(
+    input: PowerInput,
+    _extra: RequestHandlerExtra,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CalcOutput>> + Send>> {
+    Box::pin(async move { Ok(power(input.base, input.exponent)) })
+}
+
+fn sqrt_handler(
+    input: UnaryInput,
+    _extra: RequestHandlerExtra,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CalcOutput>> + Send>> {
+    Box::pin(async move { Ok(sqrt(input.x)) })
+}
+
+fn log_handler(
+    input: LogInput,
+    _extra: RequestHandlerExtra,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<CalcOutput>> + Send>> {
+    Box::pin(async move { Ok(log(input.x, input.base)) })
 }
 
 // =============================================================================
@@ -264,6 +383,36 @@ pub fn build_server() -> Result<Server> {
             "negate",
             TypedToolWithOutput::new("negate", negate_handler)
                 .with_description("Negate x. Returns { ok: true, op, inputs, result, display }.")
+                .with_ui(KEYPAD_URI),
+        )
+        .tool(
+            "power",
+            TypedToolWithOutput::new("power", power_handler)
+                .with_description(
+                    "Raise base to exponent (base^exponent). \
+                     Returns a structured CalcOutput. On overflow or undefined results \
+                     (e.g. 0^-1, (-1)^0.5), returns { ok: false, code: 'domain_error', ... }.",
+                )
+                .with_ui(KEYPAD_URI),
+        )
+        .tool(
+            "sqrt",
+            TypedToolWithOutput::new("sqrt", sqrt_handler)
+                .with_description(
+                    "Square root of x. For x < 0, returns \
+                     { ok: false, code: 'domain_error', ... }.",
+                )
+                .with_ui(KEYPAD_URI),
+        )
+        .tool(
+            "log",
+            TypedToolWithOutput::new("log", log_handler)
+                .with_description(
+                    "Logarithm of x with the given base (e.g. log(1000, 10) = 3). \
+                     For x <= 0 or base <= 0 or base == 1, returns \
+                     { ok: false, code: 'domain_error', ... }. \
+                     Use base = 10 for log10, base = 2.718281828459045 for ln.",
+                )
                 .with_ui(KEYPAD_URI),
         )
         .resources(resources)
@@ -368,6 +517,112 @@ mod tests {
         let v = serde_json::to_value(divide(1.0, 0.0)).unwrap();
         assert_eq!(v["ok"], serde_json::Value::String("false".to_string()));
         assert_eq!(v["code"], "divide_by_zero");
+    }
+
+    // ---------------------------------------------------------------------
+    // V2 — scientific primitives
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn power_basic() {
+        assert_ok(&power(2.0, 10.0), "power", 1024.0);
+        assert_ok(&power(8.0, 2.0), "power", 64.0);
+        assert_ok(&power(9.0, 0.5), "power", 3.0);
+        assert_ok(&power(2.0, -1.0), "power", 0.5);
+        assert_ok(&power(0.0, 0.0), "power", 1.0); // f64 convention: 0^0 = 1
+    }
+
+    #[test]
+    fn power_invalid_input() {
+        assert_err(&power(f64::NAN, 2.0), "invalid_input");
+        assert_err(&power(2.0, f64::INFINITY), "invalid_input");
+    }
+
+    #[test]
+    fn power_domain_error_on_undefined_result() {
+        // (-1)^0.5 is non-real -> NaN
+        assert_err(&power(-1.0, 0.5), "domain_error");
+        // 0^-1 -> Infinity
+        assert_err(&power(0.0, -1.0), "domain_error");
+    }
+
+    #[test]
+    fn sqrt_basic() {
+        assert_ok(&sqrt(0.0), "sqrt", 0.0);
+        assert_ok(&sqrt(1.0), "sqrt", 1.0);
+        assert_ok(&sqrt(64.0), "sqrt", 8.0);
+        assert_ok(&sqrt(2.0), "sqrt", std::f64::consts::SQRT_2);
+    }
+
+    #[test]
+    fn sqrt_negative_is_domain_error() {
+        assert_err(&sqrt(-1.0), "domain_error");
+        assert_err(&sqrt(-1e-12), "domain_error");
+    }
+
+    #[test]
+    fn sqrt_invalid_input() {
+        assert_err(&sqrt(f64::NAN), "invalid_input");
+        assert_err(&sqrt(f64::INFINITY), "invalid_input");
+    }
+
+    #[test]
+    fn log_basic() {
+        assert_ok(&log(1000.0, 10.0), "log", 3.0);
+        assert_ok(&log(8.0, 2.0), "log", 3.0);
+        assert_ok(&log(1.0, 10.0), "log", 0.0);
+        assert_ok(&log(std::f64::consts::E, std::f64::consts::E), "log", 1.0);
+    }
+
+    #[test]
+    fn log_domain_errors() {
+        assert_err(&log(-1.0, 10.0), "domain_error");
+        assert_err(&log(0.0, 10.0), "domain_error");
+        assert_err(&log(10.0, 0.0), "domain_error");
+        assert_err(&log(10.0, 1.0), "domain_error");
+        assert_err(&log(10.0, -2.0), "domain_error");
+    }
+
+    #[test]
+    fn log_invalid_input() {
+        assert_err(&log(f64::NAN, 10.0), "invalid_input");
+        assert_err(&log(10.0, f64::INFINITY), "invalid_input");
+    }
+
+    /// Walks the example expression `(3 + 5)^2 / log10(1000) = 64 / 3` using
+    /// only the primitive tools. This is the canonical V2 decomposition test:
+    /// the LLM produces this ordered sequence and the server provides every
+    /// step.
+    #[test]
+    fn decomposition_example_3_plus_5_squared_over_log10_1000() {
+        let step1 = add(3.0, 5.0);
+        assert_ok(&step1, "add", 8.0);
+        let inner = match &step1 {
+            CalcOutput::Ok { value } => value.result,
+            _ => panic!("step1 not ok"),
+        };
+
+        let step2 = power(inner, 2.0);
+        assert_ok(&step2, "power", 64.0);
+        let numerator = match &step2 {
+            CalcOutput::Ok { value } => value.result,
+            _ => panic!("step2 not ok"),
+        };
+
+        let step3 = log(1000.0, 10.0);
+        assert_ok(&step3, "log", 3.0);
+        let denominator = match &step3 {
+            CalcOutput::Ok { value } => value.result,
+            _ => panic!("step3 not ok"),
+        };
+
+        let step4 = divide(numerator, denominator);
+        match step4 {
+            CalcOutput::Ok { value } => {
+                assert!((value.result - 64.0 / 3.0).abs() < 1e-9);
+            }
+            CalcOutput::Err { error } => panic!("final divide failed: {:?}", error),
+        }
     }
 
     #[test]
