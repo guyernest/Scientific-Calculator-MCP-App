@@ -65,6 +65,7 @@
     .log .ok { color: #6ee7b7; }
     .log .err { color: #ff9b9b; }
     .log .llm { color: #c4b5fd; }
+    .log .host { color: #9aa6c0; }
     p.note {
       font-size: 0.8rem;
       color: #9aa6c0;
@@ -81,6 +82,35 @@
 <body>
   <iframe id="widget" src="widgets/keypad.html"></iframe>
   <div class="panel">
+    <h2>About this preview</h2>
+    <p class="note">
+      The widget now talks to its host via the official
+      <code>@modelcontextprotocol/ext-apps</code> SDK. This preview acts as
+      a minimal mock host: it answers <code>ui/initialize</code>, replies
+      to <code>tools/call</code> JSON-RPC requests (server path), and
+      pushes <code>ui/notifications/tool-result</code> +
+      <code>ui/notifications/interpretation</code> notifications (LLM
+      path). All messages flow over <code>postMessage</code> exactly as
+      they would from a real MCP Apps host.
+    </p>
+
+    <h2>Host envelope shape</h2>
+    <p class="note">
+      Some MCP hosts return <code>structuredContent</code> on
+      <code>tools/call</code>, others return only the text channel
+      (<code>content[0].text</code> with JSON-stringified output) and
+      omit <code>structuredContent</code>. The widget normalizes both.
+      Toggle this to verify the keypad still shows
+      <code>63</code> for <code>7 × 9</code> when the host strips
+      <code>structuredContent</code>.
+    </p>
+    <div class="row">
+      <label style="display:flex; align-items:center; gap:8px; font-size:0.85rem;">
+        <input id="toggle-text-only" type="checkbox" />
+        Drop <code>structuredContent</code> (text-channel only)
+      </label>
+    </div>
+
     <h2>Simulate the LLM reasoning path</h2>
     <p class="note">
       In a real MCP host (Claude Desktop, ChatGPT Apps), typing a math
@@ -103,7 +133,7 @@
       The widget itself now exposes <code>√x</code>, <code>x²</code>,
       <code>x<sup>y</sup></code>, <code>log₁₀</code>, and <code>ln</code>
       keys that route directly to these primitives via
-      <code>mcpBridge.callTool</code> (badge: <span style="color:#6ee7b7">server</span>).
+      <code>app.callServerTool</code> (badge: <span style="color:#6ee7b7">server</span>).
       The buttons below simulate the alternative path — the host LLM pushing
       the same tool results in via <code>ui/notifications/tool-result</code>
       (badge: <span style="color:#c4b5fd">llm</span>).
@@ -114,6 +144,9 @@
       <button data-tool="sqrt" data-args='{"x":-1}'>sqrt(-1) — domain error</button>
       <button data-tool="log" data-args='{"x":1000,"base":10}'>log(1000, 10)</button>
       <button data-tool="log" data-args='{"x":0,"base":10}'>log(0, 10) — domain error</button>
+      <button data-tool="get_constant" data-args='{"name":"pi"}'>get_constant("pi")</button>
+      <button data-tool="get_constant" data-args='{"name":"e"}'>get_constant("e")</button>
+      <button data-tool="get_constant" data-args='{"name":"phi"}'>get_constant("phi") — error</button>
     </div>
 
     <h2>V2 — LLM decomposition demo</h2>
@@ -128,6 +161,25 @@
       <button id="clear-steps-host">Reset (clear widget steps)</button>
     </div>
 
+    <h2>V3 — natural-language word problems</h2>
+    <p class="note">
+      Simulates the full V3 teaching loop:
+      <em>user phrasing</em> &rarr; <em>interpreted math</em> &rarr;
+      <em>executed primitive tool calls</em> &rarr; <em>final answer</em>.
+      The host pushes a
+      <code>ui/notifications/interpretation</code> envelope first
+      (phrasing, concept, expression), then issues the primitive tool
+      calls, then pushes a completion envelope with the final
+      <code>answer</code>. The server stays a flat collection of
+      primitives — interpretation lives in the LLM and is *displayed* by
+      the widget.
+    </p>
+    <div class="row">
+      <button id="run-hypotenuse">Hypotenuse (sides 5, 12)</button>
+      <button id="run-circle-area">Circle area (r = 3)</button>
+      <button id="run-discount">20% discount on 80</button>
+    </div>
+
     <h2>Tool-call log</h2>
     <div id="log" class="log">(no calls yet)</div>
   </div>
@@ -139,11 +191,13 @@
 
     function logEntry(kind, name, args, out) {
       calls.push({ kind, name, args, out, t: new Date().toISOString().slice(11, 19) });
-      const html = calls.map(c =>
-        '<span class="' + (c.out && (c.out.ok === 'false' || c.out.code) ? 'err' : (c.kind === 'llm' ? 'llm' : 'ok')) + '">' +
-        c.t + '  [' + c.kind + ']  ' + c.name + '(' + JSON.stringify(c.args) + ')\n  -> ' +
-        JSON.stringify(c.out) + '</span>'
-      ).join('\n\n');
+      const html = calls.map(c => {
+        const isErr = c.out && (c.out.ok === 'false' || c.out.code);
+        const cls = isErr ? 'err' : (c.kind === 'llm' ? 'llm' : (c.kind === 'host' ? 'host' : 'ok'));
+        return '<span class="' + cls + '">' +
+          c.t + '  [' + c.kind + ']  ' + c.name + '(' + JSON.stringify(c.args) + ')\n  -> ' +
+          JSON.stringify(c.out) + '</span>';
+      }).join('\n\n');
       logEl.innerHTML = html;
       logEl.scrollTop = logEl.scrollHeight;
     }
@@ -209,42 +263,130 @@
         const r = Math.log(args.x) / Math.log(args.base);
         return { ok: 'true', op: 'log', inputs: [args.x, args.base], result: r, display: String(r) };
       }
+      // V3: get_constant(name) — returns π or e as a primitive value the
+      // LLM can compose with the arithmetic tools. The op label embeds
+      // the resolved name so the step list reads as
+      // `get_constant(pi) → 3.1415…`.
+      if (name === 'get_constant') {
+        const key = (args.name || '').trim().toLowerCase();
+        if (key === 'pi' || key === 'π') {
+          return { ok: 'true', op: 'get_constant(pi)', inputs: [], result: Math.PI, display: String(Math.PI) };
+        }
+        if (key === 'e') {
+          return { ok: 'true', op: 'get_constant(e)', inputs: [], result: Math.E, display: String(Math.E) };
+        }
+        return { ok: 'false', op: 'get_constant', inputs: [], code: 'unknown_constant', message: "Unknown constant '" + args.name + "'. Supported: pi, e." };
+      }
       return { ok: 'false', op: name, inputs: [], code: 'unknown_tool', message: 'Unknown tool: ' + name };
     }
 
-    widget.addEventListener('load', () => {
-      const w = widget.contentWindow;
+    // -------------------------------------------------------------------
+    // Mock MCP Apps host
+    //
+    // The widget now uses @modelcontextprotocol/ext-apps. Its
+    // PostMessageTransport sends JSON-RPC requests/notifications to
+    // window.parent and listens for responses on window.message. We play
+    // the host: respond to ui/initialize and tools/call, and let the
+    // simulated-LLM buttons push notifications back into the widget.
+    // -------------------------------------------------------------------
+    function postToWidget(msg) {
+      try {
+        widget.contentWindow.postMessage(msg, '*');
+      } catch (_) { /* iframe not ready yet */ }
+    }
 
-      // Mock the MCP bridge for the in-widget (server-path) tool calls.
-      w.mcpBridge = {
-        callTool: async (name, args) => {
-          const out = compute(name, args);
-          logEntry('server', name, args, out);
-          return out;
-        },
-        getState: () => {
-          try { return JSON.parse(localStorage.getItem('calc_state') || '{}'); }
-          catch (_) { return {}; }
-        },
-        setState: (s) => {
-          try { localStorage.setItem('calc_state', JSON.stringify(s)); } catch (_) {}
-        },
-        theme: 'dark',
-      };
+    window.addEventListener('message', (event) => {
+      if (event.source !== widget.contentWindow) return;
+      const msg = event.data;
+      if (!msg || msg.jsonrpc !== '2.0') return;
 
-      // Wire up the simulated LLM-path buttons. We post a message that
-      // looks like the host's `ui/notifications/tool-result` notification.
-      function pushLLM(name, args) {
-        const out = compute(name, args);
-        logEntry('llm', name, args, out);
-        w.postMessage({
+      // Requests carry an `id` and a `method`; notifications have a
+      // `method` but no `id`. We only reply to requests.
+      if (msg.method === 'ui/initialize' && msg.id !== undefined) {
+        // Minimal accept — echo a protocol version and empty caps.
+        // Theme is delivered later via getHostContext / onhostcontextchanged.
+        postToWidget({
           jsonrpc: '2.0',
-          method: 'ui/notifications/tool-result',
-          params: { structuredContent: out },
-        }, '*');
-        return out;
+          id: msg.id,
+          result: {
+            protocolVersion: '2026-01-26',
+            hostCapabilities: {},
+            hostInfo: { name: 'preview-harness', version: '1.0.0' },
+            hostContext: { theme: 'dark' },
+          },
+        });
+        logEntry('host', 'ui/initialize', {}, { ok: 'true' });
+        return;
       }
 
+      if (msg.method === 'tools/call' && msg.id !== undefined) {
+        const name = msg.params && msg.params.name;
+        const args = (msg.params && msg.params.arguments) || {};
+        const out = compute(name, args);
+        logEntry('server', name, args, out);
+        // The MCP CallToolResult shape: structuredContent + content +
+        // isError. The widget normalizes both — when the toggle is on
+        // we omit structuredContent to exercise the text-channel path.
+        const dropStructured = isTextOnly();
+        const result = {
+          content: [{ type: 'text', text: JSON.stringify(out) }],
+          isError: out && (out.ok === 'false' || !!out.code),
+        };
+        if (!dropStructured) result.structuredContent = out;
+        postToWidget({ jsonrpc: '2.0', id: msg.id, result });
+        return;
+      }
+
+      // Acknowledge other notifications (e.g. ui/notifications/size-changed)
+      // silently — they don't need a reply. We just log size-changed at
+      // debug level so the panel doesn't get noisy.
+      if (msg.method && msg.method.startsWith('ui/notifications/')) {
+        // no-op
+        return;
+      }
+    });
+
+    // -------------------------------------------------------------------
+    // Simulated LLM-path push.
+    //
+    // The host pushes ui/notifications/tool-result so the widget's
+    // app.ontoolresult handler fires. Shape mirrors CallToolResult.
+    // -------------------------------------------------------------------
+    function pushLLM(name, args) {
+      const out = compute(name, args);
+      logEntry('llm', name, args, out);
+      const dropStructured = isTextOnly();
+      const params = {
+        content: [{ type: 'text', text: JSON.stringify(out) }],
+        isError: out && (out.ok === 'false' || !!out.code),
+      };
+      if (!dropStructured) params.structuredContent = out;
+      postToWidget({
+        jsonrpc: '2.0',
+        method: 'ui/notifications/tool-result',
+        params,
+      });
+      return out;
+    }
+
+    function isTextOnly() {
+      const cb = document.getElementById('toggle-text-only');
+      return !!(cb && cb.checked);
+    }
+
+    function pushInterpretation(env) {
+      // ui/notifications/interpretation has no SDK handler today, so the
+      // widget keeps a narrowly scoped raw message listener for it. The
+      // shape is freeform (the spec doesn't define this notification).
+      postToWidget({
+        jsonrpc: '2.0',
+        method: 'ui/notifications/interpretation',
+        params: env,
+      });
+      logEntry('llm', 'interpretation', env, env);
+    }
+
+    widget.addEventListener('load', () => {
       document.querySelectorAll('button[data-tool]').forEach(btn => {
         btn.addEventListener('click', () => {
           const name = btn.dataset.tool;
@@ -276,9 +418,79 @@
       // uses the widget's own clear flow rather than poking at state.
       document.getElementById('clear-steps-host').addEventListener('click', () => {
         try {
-          const btn = w.document.getElementById('steps-clear');
+          const btn = widget.contentWindow.document.getElementById('steps-clear');
           if (btn) btn.click();
         } catch (_) { /* preview-only convenience */ }
+      });
+
+      function resetWidget() {
+        try {
+          const btn = widget.contentWindow.document.getElementById('steps-clear');
+          if (btn) btn.click();
+        } catch (_) { /* best-effort */ }
+      }
+
+      document.getElementById('run-hypotenuse').addEventListener('click', async () => {
+        resetWidget();
+        await sleep(80);
+        pushInterpretation({
+          phrasing: 'What is the hypotenuse of a right triangle with sides 5 and 12?',
+          concept: 'Pythagorean theorem: c = √(a² + b²)',
+          expression: '√(5² + 12²)',
+        });
+        await sleep(550);
+        const aSq = pushLLM('power', { base: 5, exponent: 2 });
+        await sleep(450);
+        const bSq = pushLLM('power', { base: 12, exponent: 2 });
+        await sleep(450);
+        const sum = pushLLM('add', { a: aSq.result, b: bSq.result });
+        await sleep(450);
+        const c = pushLLM('sqrt', { x: sum.result });
+        await sleep(300);
+        pushInterpretation({
+          answer: c.result + ' (the hypotenuse is 13)',
+          complete: true,
+        });
+      });
+
+      document.getElementById('run-circle-area').addEventListener('click', async () => {
+        resetWidget();
+        await sleep(80);
+        pushInterpretation({
+          phrasing: 'What is the area of a circle with radius 3?',
+          concept: 'Area of a circle: A = π · r²',
+          expression: 'π × 3²',
+        });
+        await sleep(550);
+        const pi = pushLLM('get_constant', { name: 'pi' });
+        await sleep(450);
+        const rSq = pushLLM('power', { base: 3, exponent: 2 });
+        await sleep(450);
+        const area = pushLLM('multiply', { a: pi.result, b: rSq.result });
+        await sleep(300);
+        pushInterpretation({
+          answer: area.display + ' (≈ 9π)',
+          complete: true,
+        });
+      });
+
+      document.getElementById('run-discount').addEventListener('click', async () => {
+        resetWidget();
+        await sleep(80);
+        pushInterpretation({
+          phrasing: 'If a 20% discount is applied to 80, what is the final price?',
+          concept: 'Final price = original − (original × discount rate)',
+          expression: '80 − (80 × 0.20)',
+        });
+        await sleep(550);
+        const cut = pushLLM('multiply', { a: 80, b: 0.2 });
+        await sleep(450);
+        const final = pushLLM('subtract', { a: 80, b: cut.result });
+        await sleep(300);
+        pushInterpretation({
+          answer: final.display,
+          complete: true,
+        });
       });
     });
   </script>

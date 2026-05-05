@@ -20,8 +20,8 @@ The user clicks `=`. The widget recognizes `1 + 1` as the simple
 `number OP number` shape, so it calls the `add` primitive directly:
 
 ```jsonc
-mcpBridge.callTool("add", { "a": 1, "b": 1 })
-// -> { "ok": "true", "op": "add", "inputs": [1, 1], "result": 2, "display": "2" }
+app.callServerTool({ name: "add", arguments: { "a": 1, "b": 1 } })
+// -> { structuredContent: { "ok": "true", "op": "add", "inputs": [1, 1], "result": 2, "display": "2" }, ... }
 ```
 
 The widget renders:
@@ -62,9 +62,9 @@ are the widget's job.
 ## Divide-by-zero produces a structured error
 
 ```jsonc
-mcpBridge.callTool("divide", { "a": 1, "b": 0 })
-// -> { "ok": "false", "op": "divide", "inputs": [1, 0],
-//      "code": "divide_by_zero", "message": "Cannot divide by zero." }
+app.callServerTool({ name: "divide", arguments: { "a": 1, "b": 0 } })
+// -> { structuredContent: { "ok": "false", "op": "divide", "inputs": [1, 0],
+//                           "code": "divide_by_zero", "message": "Cannot divide by zero." }, ... }
 ```
 
 The widget renders the message in red with the `error` badge.
