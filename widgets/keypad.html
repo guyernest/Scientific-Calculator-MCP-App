@@ -5,288 +5,334 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Calculator — V3</title>
   <style>
+    :root {
+      --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+      --glass-bg: rgba(30, 41, 59, 0.7);
+      --glass-border: rgba(255, 255, 255, 0.1);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #8b5cf6;
+      --accent-hover: #a78bfa;
+      --accent-active: #c4b5fd;
+      --success: #34d399;
+      --error: #f87171;
+      --btn-bg: rgba(255, 255, 255, 0.05);
+      --btn-hover: rgba(255, 255, 255, 0.1);
+      --btn-active: rgba(255, 255, 255, 0.15);
+      --btn-op-bg: rgba(139, 92, 246, 0.2);
+      --btn-op-hover: rgba(139, 92, 246, 0.3);
+      --btn-sci-bg: rgba(236, 72, 153, 0.15);
+      --btn-sci-hover: rgba(236, 72, 153, 0.25);
+    }
+    
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #1a1a2e;
-      color: #eee;
-      min-height: 100vh;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg-gradient);
+      color: var(--text-main);
+      /* FIXED: Removed min-height: 100vh to prevent iframe autoResize collapse to 0 */
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 16px;
+      padding: 24px 16px;
+      margin: 0;
     }
-    .container { max-width: 360px; width: 100%; }
+    
+    .container { 
+      max-width: 380px; 
+      width: 100%; 
+      background: var(--glass-bg);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid var(--glass-border);
+      border-radius: 24px;
+      padding: 24px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    }
 
     h1 {
       text-align: center;
-      font-size: 1.1rem;
-      color: #aaa;
-      margin-bottom: 8px;
+      font-size: 1.25rem;
+      color: var(--text-muted);
+      margin-bottom: 16px;
       font-weight: 500;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.05em;
     }
 
-    /* The display area shows the local expression on the top, the result on
-       the bottom, and a small badge telling the user which "path" produced
-       the result so the educational point is visible. */
     .display {
-      background: #0f3460;
-      border-radius: 10px;
-      padding: 14px 16px;
-      margin-bottom: 12px;
-      min-height: 96px;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid var(--glass-border);
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 20px;
+      min-height: 110px;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
+      box-shadow: inset 0 2px 10px rgba(0,0,0,0.5);
     }
+    
     .expr {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 1.4rem;
-      color: #fff;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 1.5rem;
+      color: var(--text-main);
       word-break: break-all;
-      min-height: 1.6rem;
+      min-height: 1.8rem;
+      text-shadow: 0 0 10px rgba(255,255,255,0.2);
     }
-    .expr .placeholder { color: #6f7a90; }
+    .expr .placeholder { color: var(--text-muted); opacity: 0.5; }
 
     .result-row {
       display: flex;
       justify-content: space-between;
       align-items: flex-end;
-      gap: 8px;
-      margin-top: 8px;
+      gap: 12px;
+      margin-top: 12px;
     }
     .result {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 1.6rem;
-      color: #4ade80;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 2rem;
+      font-weight: 500;
+      color: var(--success);
       text-align: right;
       flex: 1;
       word-break: break-all;
+      text-shadow: 0 0 15px rgba(52, 211, 153, 0.4);
     }
-    .result.error { color: #ff6b6b; }
-    .result.muted { color: #5a6680; }
+    .result.error { 
+      color: var(--error); 
+      text-shadow: 0 0 15px rgba(248, 113, 113, 0.4);
+    }
+    .result.muted { 
+      color: var(--text-muted); 
+      text-shadow: none;
+    }
 
     .badge {
-      font-size: 0.7rem;
-      letter-spacing: 0.05em;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
       text-transform: uppercase;
-      padding: 3px 8px;
+      padding: 4px 10px;
       border-radius: 999px;
-      background: #16213e;
-      color: #9aa6c0;
       white-space: nowrap;
       align-self: flex-end;
-      margin-bottom: 4px;
+      margin-bottom: 6px;
+      backdrop-filter: blur(4px);
     }
-    .badge.local    { background: #16213e; color: #9aa6c0; }
-    .badge.server   { background: #0e3b2a; color: #6ee7b7; }
-    .badge.llm      { background: #2a1d4d; color: #c4b5fd; }
-    .badge.error    { background: #4a1515; color: #ff9b9b; }
+    .badge.local    { background: rgba(148, 163, 184, 0.1); color: var(--text-muted); border: 1px solid rgba(148, 163, 184, 0.2); }
+    .badge.server   { background: rgba(52, 211, 153, 0.1); color: var(--success); border: 1px solid rgba(52, 211, 153, 0.2); }
+    .badge.llm      { background: rgba(139, 92, 246, 0.1); color: var(--accent-active); border: 1px solid rgba(139, 92, 246, 0.2); }
+    .badge.error    { background: rgba(248, 113, 113, 0.1); color: var(--error); border: 1px solid rgba(248, 113, 113, 0.2); }
 
     .keypad {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
-      gap: 8px;
+      gap: 10px;
     }
-    /* V2: scientific row sits above the arithmetic grid. Five evenly
-       spaced keys; arithmetic grid stays a clean 4-wide. */
     .sci-row {
       display: grid;
       grid-template-columns: repeat(5, 1fr);
-      gap: 8px;
-      margin-bottom: 8px;
+      gap: 10px;
+      margin-bottom: 10px;
     }
+    
     button.key {
-      background: #243763;
-      color: #fff;
-      border: none;
-      padding: 14px 0;
-      border-radius: 8px;
+      background: var(--btn-bg);
+      color: var(--text-main);
+      border: 1px solid var(--glass-border);
+      padding: 16px 0;
+      border-radius: 12px;
       cursor: pointer;
-      font-size: 1.1rem;
-      font-weight: 500;
-      transition: filter 0.1s ease, transform 0.05s ease;
+      font-size: 1.25rem;
+      font-weight: 400;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
       font-family: inherit;
+      backdrop-filter: blur(4px);
     }
-    button.key:hover { filter: brightness(1.15); }
-    button.key:active { transform: translateY(1px); }
-    button.key.op    { background: #3a4d8c; }
-    button.key.eq    { background: #16a34a; grid-column: span 2; }
-    button.key.util  { background: #4a4a5e; }
-    /* V2: scientific function keys (sqrt, x^y, x^2, log10, ln) live in
-       their own row above the arithmetic keypad. They're tinted distinctly
-       so the user sees they're a different class of operation — most are
-       direct unary calls to a primitive tool, and x^y introduces a new
-       binary operator that resolves to the power primitive on `=`. */
-    button.key.sci   {
-      background: #2a1d4d;
-      color: #c4b5fd;
-      font-size: 1rem;
+    button.key:hover { 
+      background: var(--btn-hover); 
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
     }
-    button.key.sci:hover { background: #3d2a6e; }
+    button.key:active { 
+      background: var(--btn-active); 
+      transform: translateY(1px); 
+      box-shadow: none;
+    }
+    
+    button.key.op { 
+      background: var(--btn-op-bg); 
+      color: var(--accent-active);
+      font-size: 1.4rem;
+    }
+    button.key.op:hover { background: var(--btn-op-hover); }
+    
+    button.key.eq { 
+      background: var(--success); 
+      color: #064e3b;
+      font-weight: 600;
+      grid-column: span 2; 
+      border: none;
+      box-shadow: 0 4px 15px rgba(52, 211, 153, 0.3);
+    }
+    button.key.eq:hover {
+      background: #10b981;
+      box-shadow: 0 6px 20px rgba(52, 211, 153, 0.4);
+    }
+    
+    button.key.util { 
+      background: rgba(255, 255, 255, 0.02); 
+      color: var(--error); 
+    }
+    
+    button.key.sci {
+      background: var(--btn-sci-bg);
+      color: #f9a8d4;
+      font-size: 1.05rem;
+      padding: 12px 0;
+    }
+    button.key.sci:hover { background: var(--btn-sci-hover); }
 
     .hint {
-      margin-top: 12px;
-      padding: 10px 12px;
-      background: #16213e;
-      border-radius: 8px;
-      font-size: 0.8rem;
-      color: #9aa6c0;
-      line-height: 1.4;
+      margin-top: 16px;
+      padding: 12px 16px;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid var(--glass-border);
+      border-radius: 12px;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      line-height: 1.5;
       display: none;
     }
-    .hint.visible { display: block; }
+    .hint.visible { display: block; animation: fadeIn 0.3s ease; }
     .hint code {
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      background: #0f3460;
-      padding: 1px 5px;
-      border-radius: 4px;
-      color: #c4b5fd;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      background: rgba(0,0,0,0.3);
+      padding: 2px 6px;
+      border-radius: 6px;
+      color: var(--accent-active);
     }
 
     .legend {
-      margin-top: 12px;
-      font-size: 0.72rem;
-      color: #6f7a90;
-      line-height: 1.4;
+      margin-top: 16px;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+      text-align: center;
     }
-    .legend strong { color: #aab3c8; font-weight: 600; }
+    .legend strong { color: var(--text-main); font-weight: 500; }
 
-    /* V2: ordered list of LLM-decomposed tool calls. Each step shows
-       what the LLM asked the server to compute, in order, so the
-       teaching point ("the LLM did the precedence, the server did the
-       arithmetic") is visible. */
-    .steps {
-      margin-top: 14px;
-      background: #16213e;
-      border-radius: 10px;
-      padding: 12px;
+    .steps, .interp {
+      margin-top: 16px;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid var(--glass-border);
+      border-radius: 16px;
+      padding: 16px;
       display: none;
     }
-    .steps.visible { display: block; }
-    .steps-header {
+    .steps.visible, .interp.visible { display: block; animation: slideUp 0.4s ease; }
+    
+    .steps-header, .interp-title {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 8px;
-    }
-    .steps-title {
-      font-size: 0.72rem;
+      margin-bottom: 12px;
+      font-size: 0.75rem;
       letter-spacing: 0.05em;
       text-transform: uppercase;
-      color: #c4b5fd;
+      color: var(--accent-active);
       font-weight: 600;
     }
+    .interp-title { margin-bottom: 12px; }
+    
     .steps-clear {
-      background: transparent;
-      color: #6f7a90;
-      border: 1px solid #2a3558;
-      padding: 3px 8px;
-      border-radius: 6px;
+      background: rgba(255,255,255,0.05);
+      color: var(--text-muted);
+      border: none;
+      padding: 4px 10px;
+      border-radius: 8px;
       cursor: pointer;
-      font-size: 0.7rem;
-      font-family: inherit;
+      font-size: 0.75rem;
+      transition: all 0.2s;
     }
-    .steps-clear:hover { color: #c4b5fd; border-color: #4d3d8a; }
+    .steps-clear:hover { background: rgba(255,255,255,0.1); color: var(--text-main); }
+    
     .steps-list {
       list-style: none;
-      padding: 0;
-      margin: 0;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 8px;
     }
     .step {
       display: grid;
-      grid-template-columns: 22px 1fr auto;
-      gap: 8px;
+      grid-template-columns: 24px 1fr auto;
+      gap: 12px;
       align-items: baseline;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 0.82rem;
-      padding: 6px 8px;
-      background: #0f3460;
-      border-radius: 6px;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 0.85rem;
+      padding: 8px 12px;
+      background: rgba(0,0,0,0.3);
+      border-radius: 8px;
+      border-left: 2px solid var(--glass-border);
     }
-    .step .idx {
-      color: #c4b5fd;
-      font-weight: 600;
-    }
-    .step .call { color: #e6e8ef; word-break: break-word; }
-    .step .arrow { color: #6f7a90; padding: 0 4px; }
-    .step .val { color: #6ee7b7; font-weight: 600; }
-    .step.err .val { color: #ff9b9b; }
-    .step.err .call { color: #ffd0d0; }
+    .step .idx { color: var(--accent-hover); font-weight: 600; }
+    .step .call { color: var(--text-main); word-break: break-word; }
+    .step .arrow { color: var(--text-muted); padding: 0 6px; }
+    .step .val { color: var(--success); font-weight: 500; }
+    .step.err { border-left-color: var(--error); }
+    .step.err .val { color: var(--error); }
+    .step.err .call { color: #fca5a5; }
     .step .err-code {
-      font-size: 0.7rem;
-      color: #ff9b9b;
+      font-size: 0.75rem;
+      color: var(--error);
       grid-column: 2 / 4;
-      margin-top: 2px;
+      margin-top: 4px;
+      opacity: 0.8;
     }
 
-    /* V3: interpretation panel — visualizes the natural-language teaching
-       loop. The user types a word problem in chat; the LLM emits an
-       interpretation (phrasing → math) and then the ordered tool calls.
-       The widget renders the interpretation above the step list so the
-       full path is legible:
-         user phrasing  →  interpreted math  →  tool calls  →  final answer */
     .interp {
-      margin-top: 14px;
-      background: #16213e;
-      border-radius: 10px;
-      padding: 12px;
-      display: none;
-      border-left: 3px solid #c4b5fd;
-    }
-    .interp.visible { display: block; }
-    .interp-title {
-      font-size: 0.72rem;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      color: #c4b5fd;
-      font-weight: 600;
-      margin-bottom: 8px;
+      border-left: 4px solid var(--accent);
     }
     .interp-row {
       display: grid;
-      grid-template-columns: 88px 1fr;
-      gap: 8px;
+      grid-template-columns: 90px 1fr;
+      gap: 12px;
       align-items: baseline;
-      font-size: 0.82rem;
-      padding: 4px 0;
+      font-size: 0.85rem;
+      padding: 6px 0;
     }
-    .interp-row + .interp-row { border-top: 1px solid #1f2a4d; }
+    .interp-row + .interp-row { border-top: 1px solid rgba(255,255,255,0.05); }
     .interp-label {
-      color: #6f7a90;
-      font-size: 0.7rem;
-      letter-spacing: 0.04em;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
       text-transform: uppercase;
     }
     .interp-value {
-      color: #e6e8ef;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: var(--text-main);
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
       word-break: break-word;
     }
     .interp-value.phrasing {
-      color: #fde68a;
-      font-family: inherit;
+      color: #fde047;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       font-style: italic;
     }
-    .interp-value.concept {
-      color: #c4b5fd;
-      font-family: inherit;
-    }
-    .interp-value.expr {
-      color: #6ee7b7;
-    }
+    .interp-value.concept { color: var(--accent-active); font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .interp-value.expr { color: var(--success); }
     .interp-value.final-answer {
-      color: #6ee7b7;
+      color: var(--success);
       font-weight: 600;
-      font-size: 1rem;
+      font-size: 1.1rem;
+      text-shadow: 0 0 10px rgba(52,211,153,0.3);
     }
-    .interp-value.pending {
-      color: #6f7a90;
-      font-style: italic;
+    .interp-value.pending { color: var(--text-muted); font-style: italic; font-size: 0.9rem; }
+
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes slideUp { 
+      from { opacity: 0; transform: translateY(10px); } 
+      to { opacity: 1; transform: translateY(0); } 
     }
   </style>
 </head>
@@ -403,11 +449,14 @@
     // both are gone (replaced by the SDK) except for two narrow fallbacks
     // documented inline below.
     //
-    // The SDK is loaded over esm.sh so the widget remains a single, raw
-    // HTML resource (the server include_str!s it as-is). No bundler step
-    // is required to deploy — that keeps the educational milestone honest:
-    // V1/V2/V3 are just `widgets/keypad.html`.
-    import { App } from "https://esm.sh/@modelcontextprotocol/ext-apps@1.7.1";
+    // The SDK is bundled in via Vite + vite-plugin-singlefile at build time
+    // (see widgets/vite.config.js). Source stays as a normal `import` from
+    // the bare module specifier; the build step inlines the SDK bytes into
+    // dist/keypad.html, which the Rust server include_str!s. The deployed
+    // widget is fully self-contained — no esm.sh / CDN at runtime, which
+    // matters because Claude.ai's widget iframe sandbox blocks external
+    // ESM imports.
+    import { App } from "@modelcontextprotocol/ext-apps";
 
     const app = new App({
       name: "scientific-calculator",

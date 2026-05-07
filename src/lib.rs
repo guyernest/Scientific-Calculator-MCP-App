@@ -37,10 +37,21 @@ use serde::{Deserialize, Serialize};
 // =============================================================================
 // Embedded widgets — bundled at compile time so both local and Lambda runtimes
 // have everything they need without disk access.
+//
+// `keypad` is reserved for V4 code mode and direct invocation; unwired today
+// so per-primitive LLM decomposition doesn't stack full keypads in chat.
+// `step` is a compact one-row widget wired to every primitive.
+//
+// Both bundled by Vite + vite-plugin-singlefile so the SDK is inlined —
+// claude.ai's iframe sandbox blocks external ESM imports, which broke the
+// previous esm.sh-based loader.
 // =============================================================================
 
-const KEYPAD_HTML: &str = include_str!("../widgets/keypad.html");
+const KEYPAD_HTML: &str = include_str!("../widgets/dist/keypad.html");
 const KEYPAD_URI: &str = "ui://app/keypad";
+
+const STEP_HTML: &str = include_str!("../widgets/dist/step.html");
+const STEP_URI: &str = "ui://app/step";
 
 // =============================================================================
 // Tool Inputs
@@ -407,10 +418,15 @@ fn get_constant_handler(
 // =============================================================================
 
 pub fn build_server() -> Result<Server> {
-    let resources = ResourceCollection::new().add_ui_resource(
-        UIResource::html_mcp_app(KEYPAD_URI, "keypad"),
-        UIResourceContents::html(KEYPAD_URI, KEYPAD_HTML),
-    );
+    let resources = ResourceCollection::new()
+        .add_ui_resource(
+            UIResource::html_mcp_app(KEYPAD_URI, "keypad"),
+            UIResourceContents::html(KEYPAD_URI, KEYPAD_HTML),
+        )
+        .add_ui_resource(
+            UIResource::html_mcp_app(STEP_URI, "step"),
+            UIResourceContents::html(STEP_URI, STEP_HTML),
+        );
 
     ServerBuilder::new()
         .name("scientific-calculator")
@@ -419,19 +435,19 @@ pub fn build_server() -> Result<Server> {
             "add",
             TypedToolWithOutput::new("add", add_handler)
                 .with_description("Add two numbers. Returns { ok: true, op, inputs, result, display }.")
-                .with_ui(KEYPAD_URI),
+                .with_ui(STEP_URI),
         )
         .tool(
             "subtract",
             TypedToolWithOutput::new("subtract", subtract_handler)
                 .with_description("Subtract b from a. Returns { ok: true, op, inputs, result, display }.")
-                .with_ui(KEYPAD_URI),
+                .with_ui(STEP_URI),
         )
         .tool(
             "multiply",
             TypedToolWithOutput::new("multiply", multiply_handler)
                 .with_description("Multiply two numbers. Returns { ok: true, op, inputs, result, display }.")
-                .with_ui(KEYPAD_URI),
+                .with_ui(STEP_URI),
         )
         .tool(
             "divide",
@@ -439,13 +455,13 @@ pub fn build_server() -> Result<Server> {
                 .with_description(
                     "Divide a by b. On b == 0, returns { ok: false, code: 'divide_by_zero', ... }.",
                 )
-                .with_ui(KEYPAD_URI),
+                .with_ui(STEP_URI),
         )
         .tool(
             "negate",
             TypedToolWithOutput::new("negate", negate_handler)
                 .with_description("Negate x. Returns { ok: true, op, inputs, result, display }.")
-                .with_ui(KEYPAD_URI),
+                .with_ui(STEP_URI),
         )
         .tool(
             "power",
@@ -455,7 +471,7 @@ pub fn build_server() -> Result<Server> {
                      Returns a structured CalcOutput. On overflow or undefined results \
                      (e.g. 0^-1, (-1)^0.5), returns { ok: false, code: 'domain_error', ... }.",
                 )
-                .with_ui(KEYPAD_URI),
+                .with_ui(STEP_URI),
         )
         .tool(
             "sqrt",
@@ -464,7 +480,7 @@ pub fn build_server() -> Result<Server> {
                     "Square root of x. For x < 0, returns \
                      { ok: false, code: 'domain_error', ... }.",
                 )
-                .with_ui(KEYPAD_URI),
+                .with_ui(STEP_URI),
         )
         .tool(
             "log",
@@ -475,7 +491,7 @@ pub fn build_server() -> Result<Server> {
                      { ok: false, code: 'domain_error', ... }. \
                      Use base = 10 for log10, base = 2.718281828459045 for ln.",
                 )
-                .with_ui(KEYPAD_URI),
+                .with_ui(STEP_URI),
         )
         .tool(
             "get_constant",
@@ -490,7 +506,7 @@ pub fn build_server() -> Result<Server> {
                      power(r, 2), multiply(pi, r²). Unknown names return \
                      { ok: false, code: 'unknown_constant', ... }.",
                 )
-                .with_ui(KEYPAD_URI),
+                .with_ui(STEP_URI),
         )
         .resources(resources)
         .with_host_layer(HostType::ChatGpt)

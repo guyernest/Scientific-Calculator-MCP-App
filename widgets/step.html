@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Calculator step</title>
+  <style>
+    /* Shares the keypad's theme tokens so the visual language is
+       consistent. When V4 (code mode) lands, the keypad's step list
+       reuses these row visuals. */
+    :root {
+      --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+      --glass-bg: rgba(30, 41, 59, 0.7);
+      --glass-border: rgba(255, 255, 255, 0.1);
+      --text-main: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent-active: #c4b5fd;
+      --success: #34d399;
+      --error: #f87171;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg-gradient);
+      color: var(--text-main);
+      padding: 8px 12px;
+      margin: 0;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr auto auto auto;
+      gap: 12px;
+      align-items: center;
+      background: var(--glass-bg);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 1px solid var(--glass-border);
+      border-radius: 10px;
+      padding: 10px 14px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    }
+    .row.err { border-left: 3px solid var(--error); }
+
+    .call {
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 0.95rem;
+      color: var(--text-main);
+      word-break: break-all;
+    }
+    .arrow {
+      color: var(--text-muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .val {
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 1.05rem;
+      font-weight: 500;
+      color: var(--success);
+      text-shadow: 0 0 8px rgba(52, 211, 153, 0.3);
+    }
+    .row.err .val {
+      color: var(--error);
+      text-shadow: 0 0 8px rgba(248, 113, 113, 0.3);
+    }
+
+    .badge {
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      padding: 3px 8px;
+      border-radius: 999px;
+      white-space: nowrap;
+      background: rgba(139, 92, 246, 0.1);
+      color: var(--accent-active);
+      border: 1px solid rgba(139, 92, 246, 0.2);
+    }
+    .row.err .badge {
+      background: rgba(248, 113, 113, 0.1);
+      color: var(--error);
+      border-color: rgba(248, 113, 113, 0.25);
+    }
+
+    .err-detail {
+      grid-column: 1 / -1;
+      font-size: 0.75rem;
+      color: var(--error);
+      margin-top: 6px;
+      opacity: 0.85;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    .pending { color: var(--text-muted); font-style: italic; }
+  </style>
+</head>
+<body>
+  <!-- Compact one-row widget for primitive tool calls.
+       Each LLM-driven primitive (add, subtract, …, get_constant) renders
+       its own instance of this widget — one row per call — instead of a
+       full keypad each time. The full keypad is reserved for code mode
+       (V4 execute_code) where a single tool call carries a whole script
+       trace. -->
+  <div id="root" class="row">
+    <span id="call" class="call pending">waiting for tool result&hellip;</span>
+    <span class="arrow">&rarr;</span>
+    <span id="val" class="val pending">&hellip;</span>
+    <span id="badge" class="badge">llm</span>
+  </div>
+
+  <script type="module">
+    import { App } from "@modelcontextprotocol/ext-apps";
+
+    const app = new App({
+      name: "scientific-calculator-step",
+      version: "1.0.0",
+    });
+
+    const rootEl = document.getElementById("root");
+    const callEl = document.getElementById("call");
+    const valEl = document.getElementById("val");
+
+    function formatNum(n) {
+      if (typeof n !== "number") return String(n);
+      if (!Number.isFinite(n)) return String(n);
+      if (Number.isInteger(n)) return String(n);
+      return String(Number(n.toFixed(10)));
+    }
+
+    function renderError(code, message) {
+      let detail = document.getElementById("err-detail");
+      if (!detail) {
+        detail = document.createElement("div");
+        detail.id = "err-detail";
+        detail.className = "err-detail";
+        rootEl.appendChild(detail);
+      }
+      detail.textContent = code + ": " + message;
+    }
+
+    function render(out) {
+      if (!out) return;
+
+      // Discriminator on the Rust enum is "true"/"false" string. Be
+      // defensive about the shape coming from any host.
+      const ok = out.ok === true || out.ok === "true";
+      const op = out.op || "unknown";
+      const inputs = out.inputs || [];
+      const callText = op + "(" + inputs.map(formatNum).join(", ") + ")";
+
+      callEl.textContent = callText;
+      callEl.classList.remove("pending");
+
+      if (ok) {
+        const display = out.display !== undefined ? String(out.display)
+                       : out.result !== undefined ? String(out.result)
+                       : "";
+        valEl.textContent = display;
+        valEl.classList.remove("pending");
+        rootEl.classList.remove("err");
+        return;
+      }
+
+      const code = out.code || "error";
+      const message = out.message || code;
+      valEl.textContent = code;
+      valEl.classList.remove("pending");
+      rootEl.classList.add("err");
+      renderError(code, message);
+    }
+
+    // SDK handlers — register all before connect() so queued
+    // notifications can replay into them.
+    app.onteardown = async () => ({});
+    app.ontoolinput = () => {};
+    app.ontoolcancelled = () => {};
+    app.onerror = (err) => {
+      console.error("[step] App error:", err);
+    };
+    app.ontoolresult = (result) => {
+      if (result && result.structuredContent) {
+        render(result.structuredContent);
+      }
+    };
+
+    // Step widgets are typically rendered by the host immediately after a
+    // tool call resolves, so the result is already in host context at
+    // boot time. Read it from getHostContext().toolOutput on connect, and
+    // also keep ontoolresult registered for any subsequent updates.
+    app.connect()
+      .then(() => {
+        const ctx = app.getHostContext && app.getHostContext();
+        const toolOutput = ctx && ctx.toolOutput;
+        if (toolOutput && toolOutput.structuredContent) {
+          render(toolOutput.structuredContent);
+        }
+      })
+      .catch((err) => {
+        console.warn("[step] app.connect() failed:", err);
+      });
+  </script>
+</body>
+</html>
