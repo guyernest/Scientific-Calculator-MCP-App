@@ -23,6 +23,14 @@
 //! The server still does not parse phrasing; interpretation lives in the
 //! LLM and is *displayed* by the widget.
 //!
+//! V4: adds `execute_code(expression)` — code mode. The LLM emits one math
+//! expression instead of decomposing into N primitive calls. The server
+//! parses it, runs each operation through the same primitives V1/V2/V3
+//! tools wrap, and returns the full step trace plus the final result. The
+//! chat shifts from "N step rows" to "one keypad widget showing the script,
+//! the trace, and the answer." See `src/code_mode.rs` for the parser and
+//! evaluator.
+//!
 //! See `src/main.rs` for the design narrative and `examples/` for usage.
 
 use pmcp::server::simple_resources::ResourceCollection;
@@ -34,13 +42,17 @@ use pmcp::{RequestHandlerExtra, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub mod code_mode;
+
 // =============================================================================
 // Embedded widgets — bundled at compile time so both local and Lambda runtimes
 // have everything they need without disk access.
 //
-// `keypad` is reserved for V4 code mode and direct invocation; unwired today
-// so per-primitive LLM decomposition doesn't stack full keypads in chat.
-// `step` is a compact one-row widget wired to every primitive.
+// `keypad` is wired to `execute_code` (V4 code mode) — the full widget renders
+// the script, the step trace, and the final answer in one place.
+// `step` is a compact one-row widget wired to every primitive (V1/V2/V3) so
+// LLM-decomposed paths show one thin row per step instead of stacking
+// keypads.
 //
 // Both bundled by Vite + vite-plugin-singlefile so the SDK is inlined —
 // claude.ai's iframe sandbox blocks external ESM imports, which broke the
@@ -414,6 +426,138 @@ fn get_constant_handler(
 }
 
 // =============================================================================
+// V4 — Code mode tool
+//
+// `execute_code(expression)` is the single LLM-driven entry point for
+// multi-step calculations. The expression is parsed and walked step-by-step
+// through the same primitive functions V1/V2/V3 expose; each step is
+// recorded so the keypad widget can render the trace alongside the script
+// and the final answer.
+// =============================================================================
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct ExecuteCodeInput {
+    /// Math expression to run. Supports numbers (including scientific notation),
+    /// the constants `pi` and `e`, the calculator functions (`add`, `subtract`,
+    /// `multiply`, `divide`, `negate`, `power`, `sqrt`, `log`), the infix
+    /// operators `+ - * / ^`, and parentheses for grouping. `^` is
+    /// right-associative.
+    pub expression: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ExecuteCodeSuccess {
+    /// The expression that was run (echoed for the widget's display row).
+    pub expression: String,
+    /// Ordered trace — one entry per primitive dispatch.
+    pub steps: Vec<CalcOutput>,
+    pub result: f64,
+    pub display: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ExecuteCodeFailure {
+    pub expression: String,
+    /// Trace up to and including the failing step (if any).
+    pub steps: Vec<CalcOutput>,
+    /// `parse_error` | `unknown_function` | `unknown_constant` |
+    /// `arity` | `step_failed`.
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(tag = "ok")]
+#[schemars(extend("type" = "object"))]
+pub enum ExecuteCodeOutput {
+    #[serde(rename = "true")]
+    Ok {
+        #[serde(flatten)]
+        value: ExecuteCodeSuccess,
+    },
+    #[serde(rename = "false")]
+    Err {
+        #[serde(flatten)]
+        error: ExecuteCodeFailure,
+    },
+}
+
+pub fn execute_code(expression: &str) -> ExecuteCodeOutput {
+    let parsed = match code_mode::parse(expression) {
+        Ok(e) => e,
+        Err(e) => {
+            return ExecuteCodeOutput::Err {
+                error: ExecuteCodeFailure {
+                    expression: expression.to_string(),
+                    steps: Vec::new(),
+                    code: "parse_error".to_string(),
+                    message: format!("{} (at position {})", e.message, e.position),
+                },
+            };
+        }
+    };
+
+    let mut ctx = code_mode::EvalContext::new();
+    match code_mode::evaluate(&parsed, &mut ctx) {
+        Ok(result) => ExecuteCodeOutput::Ok {
+            value: ExecuteCodeSuccess {
+                expression: expression.to_string(),
+                steps: ctx.steps,
+                result,
+                display: format_number(result),
+            },
+        },
+        Err(err) => {
+            let (code, message) = match &err {
+                code_mode::EvalError::UnknownFunction(name) => (
+                    "unknown_function",
+                    format!("'{}' is not a recognized function. Available: add, subtract, multiply, divide, negate, power, sqrt, log.", name),
+                ),
+                code_mode::EvalError::UnknownConstant(name) => (
+                    "unknown_constant",
+                    format!("'{}' is not a recognized constant. Available: pi, e.", name),
+                ),
+                code_mode::EvalError::Arity { name, expected, got } => (
+                    "arity",
+                    format!("'{}' expects {} argument(s), got {}.", name, expected, got),
+                ),
+                code_mode::EvalError::StepFailed { step } => {
+                    let m = match step {
+                        CalcOutput::Err { error } => {
+                            format!("step {} failed: {}: {}", ctx.steps.len(), error.code, error.message)
+                        }
+                        _ => "step failed".to_string(),
+                    };
+                    return ExecuteCodeOutput::Err {
+                        error: ExecuteCodeFailure {
+                            expression: expression.to_string(),
+                            steps: ctx.steps,
+                            code: "step_failed".to_string(),
+                            message: m,
+                        },
+                    };
+                }
+            };
+            ExecuteCodeOutput::Err {
+                error: ExecuteCodeFailure {
+                    expression: expression.to_string(),
+                    steps: ctx.steps,
+                    code: code.to_string(),
+                    message,
+                },
+            }
+        }
+    }
+}
+
+fn execute_code_handler(
+    input: ExecuteCodeInput,
+    _extra: RequestHandlerExtra,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ExecuteCodeOutput>> + Send>> {
+    Box::pin(async move { Ok(execute_code(&input.expression)) })
+}
+
+// =============================================================================
 // Server builder — used by both the local HTTP binary and the Lambda wrapper.
 // =============================================================================
 
@@ -507,6 +651,32 @@ pub fn build_server() -> Result<Server> {
                      { ok: false, code: 'unknown_constant', ... }.",
                 )
                 .with_ui(STEP_URI),
+        )
+        .tool(
+            "execute_code",
+            TypedToolWithOutput::new("execute_code", execute_code_handler)
+                .with_description(
+                    "V4 — Code mode. Run a math expression as a single tool \
+                     call. The expression is parsed and walked step-by-step \
+                     through the same primitives the other tools wrap; the \
+                     full trace is returned alongside the final answer. \
+                     Prefer this over decomposing into many primitive calls \
+                     whenever the user asks for a multi-step computation — \
+                     the chat surface stays clean (one widget, full trace) \
+                     instead of stacking N step rows. \
+                     \n\nSupported syntax: \
+                     numbers (incl. 1e3 / 1.5e-2); the constants 'pi' and \
+                     'e'; the functions add, subtract, multiply, divide, \
+                     negate, power, sqrt, log; the operators + - * / ^ with \
+                     standard precedence (^ is right-associative); \
+                     parentheses for grouping. No variables, no statements — \
+                     a single expression. \
+                     \n\nExamples: \
+                     '(3 + 5) ^ 2 / log(1000, 10)', \
+                     'sqrt(power(5, 2) + power(12, 2))', \
+                     'pi * power(34, 2)'.",
+                )
+                .with_ui(KEYPAD_URI),
         )
         .resources(resources)
         .with_host_layer(HostType::ChatGpt)

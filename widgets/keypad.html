@@ -868,6 +868,41 @@
       renderSteps();
     }
 
+    // V4: bulk-load an execute_code result. The server-side parser walked the
+    // expression and recorded one step per primitive dispatch; the widget
+    // renders the script in the expression row, the trace in the step list,
+    // and the final answer (or error) in the result row — all from the
+    // single tool result the host delivered at init time.
+    //
+    // Shape:
+    //   { ok: "true", expression, steps: [...], result, display }
+    //   { ok: "false", expression, steps: [...], code, message }
+    function applyExecuteCodeResult(out) {
+      if (!out) return;
+      if (out.expression) {
+        exprEl.textContent = out.expression;
+      }
+      // Bulk-load the trace, replacing whatever was there. A code-mode run
+      // is the whole story; mixing it with prior decomposed steps would
+      // confuse the user about what actually happened.
+      state.steps = Array.isArray(out.steps) ? out.steps.slice() : [];
+      renderSteps();
+
+      const ok = out.ok === true || out.ok === 'true';
+      if (ok) {
+        const display = out.display !== undefined ? String(out.display)
+                       : out.result !== undefined ? String(out.result)
+                       : '';
+        setResult(display, 'llm');
+        return;
+      }
+      // Error shape: the trace up to and including the failing step is
+      // already loaded; surface the code/message in the result row.
+      const code = out.code || 'error';
+      const message = out.message || code;
+      setResult(message, 'error');
+    }
+
     function clearSteps() {
       state.steps = [];
       // V3: clearing also retires the current interpretation, since the
@@ -1042,8 +1077,14 @@
       // listener filtered on `ui/notifications/tool-result`. The SDK
       // hands us the full CallToolResult; the keypad UI only needs the
       // structuredContent payload.
-      if (result && result.structuredContent) {
-        applyToolResult(result.structuredContent, /*fromLLM=*/true);
+      const sc = result && result.structuredContent;
+      if (!sc) return;
+      // V4: discriminate execute_code (has `expression` + `steps` array)
+      // from primitive results so the bulk-load path renders the trace.
+      if (sc.expression !== undefined && Array.isArray(sc.steps)) {
+        applyExecuteCodeResult(sc);
+      } else {
+        applyToolResult(sc, /*fromLLM=*/true);
       }
     };
 
@@ -1144,6 +1185,21 @@
         .then(() => {
           const ctx = app.getHostContext && app.getHostContext();
           applyTheme((ctx && ctx.theme) || 'dark');
+
+          // V4: when the host renders this widget in response to an
+          // `execute_code` tool call, the structured result is already in
+          // host context — bulk-load the script + step trace + answer
+          // before we render. Other tool results (e.g. someone wired
+          // a primitive to the keypad URI) fall through to applyToolResult.
+          const toolOutput = ctx && ctx.toolOutput;
+          const sc = toolOutput && toolOutput.structuredContent;
+          if (sc) {
+            if (sc.expression !== undefined && Array.isArray(sc.steps)) {
+              applyExecuteCodeResult(sc);
+            } else {
+              applyToolResult(sc, /*fromLLM=*/true);
+            }
+          }
         })
         .catch((err) => {
           // Connect failures are not fatal in preview/dev contexts where

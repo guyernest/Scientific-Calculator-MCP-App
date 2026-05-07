@@ -79,9 +79,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("Tools (V3 — natural language helpers):");
     println!("  - get_constant(name)     Look up 'pi' or 'e' as a primitive value the LLM can compose with.");
     println!();
+    println!("Tools (V4 — code mode):");
+    println!("  - execute_code(expression)  Run a multi-step math expression as one call. Returns full step trace.");
+    println!();
     println!("Widget resources:");
     println!("  - ui://app/step    Compact one-row widget rendered per primitive tool call.");
-    println!("  - ui://app/keypad  Full keypad widget. Reserved for code mode (V4 execute_code).");
+    println!("  - ui://app/keypad  Full keypad widget. Wired to execute_code (V4 code mode).");
     println!();
     println!(
         "Connect with: cargo pmcp connect --server scientific-calculator \\\n             --client claude-code --url http://{}",
